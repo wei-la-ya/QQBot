@@ -21,8 +21,16 @@
 
 - 应用名：**QQBot**
 - 包名：**`com.qqbot.client`**，minSdk 24，targetSdk 34
-- 版本：`versionCode 2` / `versionName 1.1`
+- 版本：`versionCode 3` / `versionName 1.2`
 - `local.properties` 由本地生成（指向自己的 SDK 路径），**不要提交**
+
+### 下载 CI 构建的 APK
+
+仓库已配置 GitHub Actions，推送到 `main` 后自动跑测试并构建签名 APK：
+
+1. 打开仓库 **Actions → Build APK → 最新一次运行**
+2. 页面底部 **Artifacts → QQBot-apk** 下载 zip，解压得到 `QQBot-<n>.apk`
+3. 直接安装（已用仓库 secrets 里的密钥签名，可覆盖旧版）
 
 ### 云端自动构建（GitHub Actions）
 
