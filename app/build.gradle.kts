@@ -1,4 +1,4 @@
-plugins {
+﻿plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
@@ -11,8 +11,8 @@ android {
         applicationId = "com.qqbot.client"
         minSdk = 24
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.1"
+        versionCode = 3
+        versionName = "1.2"
     }
 
     buildTypes {
@@ -21,7 +21,7 @@ android {
         }
     }
 
-    // 产物统一命名为 QQBot.apk / QQBot-debug.apk，不再出现 QQ 字样
+    // 浜х墿缁熶竴鍛藉悕涓?QQBot.apk / QQBot-debug.apk锛屼笉鍐嶅嚭鐜?QQ 瀛楁牱
     applicationVariants.all {
         val variantName = name
         outputs.all {
@@ -77,3 +77,4 @@ dependencies {
     testImplementation("org.robolectric:robolectric:4.12.2")
     testImplementation("androidx.test:core:1.5.0")
 }
+

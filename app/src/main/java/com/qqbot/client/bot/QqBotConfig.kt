@@ -58,6 +58,12 @@ object QqBotConfig {
      * 用户头像：QQ appid + 成员 openid，尺寸 100。
      * 例：https://q.qlogo.cn/qqapp/102056888/8F3A.../100
      */
-    fun memberAvatar(appId: String, openId: String, size: Int = 100) =
-        "https://q.qlogo.cn/qqapp/$appId/$openId/$size"
+    /**
+     * 用户头像。
+     *
+     * 实测结论：`q.qlogo.cn/qqapp/{appid}/{openid}/100` 对**机器人 openid 无效**，
+     * 任何参数都返回同一张 QQ 默认企鹅头像。也就是说机器人拿不到成员真实头像，
+     * 因此这里返回空字符串，由 UI 统一退化成「昵称首字 + 稳定配色」。
+     */
+    fun memberAvatar(appId: String, openId: String, size: Int = 100): String = ""
 }

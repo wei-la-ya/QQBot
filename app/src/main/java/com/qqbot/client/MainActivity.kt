@@ -384,6 +384,12 @@ private fun QQApp(vm: MainViewModel = viewModel()) {
                     albumMode = albumMode,
                     onAlbumModeChange = { vm.setAlbumMode(if (it == AlbumMode.FULL) "full" else "half") },
                     cacheBytes = cacheBytes,
+                    onCopyOpenId = { id ->
+                        val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                            as android.content.ClipboardManager
+                        cm.setPrimaryClip(android.content.ClipData.newPlainText("openid", id))
+                        vm.toast("已复制 OpenID")
+                    },
                     onAddBot = { showAddBot = true; addError = null },
                     onSwitch = { vm.switchAccount(it) },
                     onLogout = { vm.logout(it) },

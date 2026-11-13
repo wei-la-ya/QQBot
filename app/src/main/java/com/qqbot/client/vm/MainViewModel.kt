@@ -118,12 +118,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 val client = OpenApiClient(tm, httpClient)
                 val gw = client.getGatewayUrl()
 
+                // 上线即拉取机器人自身资料：openid、昵称、真实头像
+                val self = client.getSelfInfo().takeIf { it.ok }?.data
                 val account = BotAccount(
                     appId = appId.trim(),
                     appSecret = secret.trim(),
-                    botName = "QQ机器人 ${appId.trim().takeLast(4)}",
-                    botOpenId = "",
+                    botName = self?.optString("username")?.ifEmpty { null }
+                        ?: "QQ机器人 ${appId.trim().takeLast(4)}",
+                    botOpenId = self?.optString("id").orEmpty(),
                     apiVersion = version,
+                    avatar = self?.optString("avatar")?.replace("http://", "https://").orEmpty(),
                 )
                 withContext(Dispatchers.IO) {
                     val accounts = (_state.value.accounts.filter { it.appId != account.appId } + account)
@@ -213,6 +217,32 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val client = OpenApiClient(tm, httpClient)
         apiClient = client
         imageHost = ImageHost(client)
+
+        // 每次启动刷新一次自身资料：头像 URL 带签名有时效，缓存里的可能已失效
+        viewModelScope.launch {
+            val self = client.getSelfInfo()
+            if (self.ok) {
+                botOpenId = self.data.optString("id").ifEmpty { botOpenId }
+                val latest = _state.value.currentAccount
+                if (latest != null && latest.appId == account.appId) {
+                    val updated = latest.copy(
+                        botName = self.data.optString("username").ifEmpty { latest.botName },
+                        botOpenId = botOpenId,
+                        avatar = self.data.optString("avatar").replace("http://", "https://"),
+                    )
+                    _state.update {
+                        it.copy(
+                            currentAccount = updated,
+                            accounts = it.accounts.map { a -> if (a.appId == account.appId) updated else a },
+                        )
+                    }
+                    withContext(Dispatchers.IO) {
+                        storage.saveAccounts(_state.value.accounts)
+                        storage.setSelfOpenId(account.appId, botOpenId)
+                    }
+                }
+            }
+        }
 
         refreshConversations()
 
@@ -577,10 +607,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 append(
                     when {
                         // 普通模式：一律按纯文本发送（严格转义，任何语法都不会生效）
-                        !_state.value.markdownMode -> MarkdownBuilder.autoWrapPlain(t)
+                        // 但表情标签 <faceType=...> 必须原样保留，否则会变成一堆反斜杠
+                        !_state.value.markdownMode -> protectFaces(t) { MarkdownBuilder.autoWrapPlain(it) }
                         // MD 模式：用户已经手写了 md 语法就原样发，否则按块级语法混排包装
                         looksLikeMarkdown(t) -> t
-                        else -> MarkdownBuilder.autoWrapMixed(t)
+                        else -> protectFaces(t) { MarkdownBuilder.autoWrapMixed(it) }
                     }
                 )
             }.trim()
@@ -814,6 +845,25 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 _state.update { it.copy(messages = it.messages + local, conversations = convs) }
             }
         }
+    }
+
+    /**
+     * 转义时保护表情标签。
+     * 用户选的表情会以 `<faceType=...>` 形式插入输入框，
+     * 这些标签是发给服务端的指令，绝不能被当成普通文字转义。
+     */
+    private fun protectFaces(text: String, escape: (String) -> String): String {
+        val faceRegex = Regex("<faceType=[^>]*>")
+        val placeholders = mutableListOf<String>()
+        val replaced = faceRegex.replace(text) { m ->
+            placeholders.add(m.value)
+            "\u0000F${placeholders.size - 1}\u0000"
+        }
+        var result = escape(replaced)
+        placeholders.forEachIndexed { i, tag ->
+            result = result.replace("\u0000F$i\u0000", tag)
+        }
+        return result
     }
 
     /** 被引用消息的摘要文字（图片/视频等显示为占位标签） */

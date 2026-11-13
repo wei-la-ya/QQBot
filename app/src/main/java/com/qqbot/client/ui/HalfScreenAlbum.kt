@@ -49,6 +49,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
@@ -106,6 +107,10 @@ fun AlbumPanel(
     var panelHeightPx by remember { mutableFloatStateOf(0f) }
     // 是否已拖入拖放区（用于「松手发送」）
     var inDropZone by remember { mutableStateOf(false) }
+    // 面板在窗口中的位置，用于把单元格局部坐标换算到面板坐标系
+    var panelTopInWindow by remember { mutableFloatStateOf(-1f) }
+    var panelLeftInWindow by remember { mutableFloatStateOf(0f) }
+    var cellOffsetInPanel by remember { mutableStateOf(Offset.Zero) }
 
     LaunchedEffect(visible, videoMode) {
         if (!visible) return@LaunchedEffect
@@ -130,7 +135,12 @@ fun AlbumPanel(
                     else Modifier.fillMaxHeight()
                 )
                 .background(Color.White)
-                .onGloballyPositioned { panelHeightPx = it.size.height.toFloat() }
+                .onGloballyPositioned {
+                    panelHeightPx = it.size.height.toFloat()
+                    val p = it.positionInWindow()
+                    panelTopInWindow = p.y
+                    panelLeftInWindow = p.x
+                }
         ) {
             // ---------- 拖放区（拖拽时才出现，占据面板上部） ----------
             DragSendZone(
@@ -203,13 +213,14 @@ fun AlbumPanel(
                                     detectDragGesturesAfterLongPress(
                                         onDragStart = { off ->
                                             dragging = item
-                                            dragPos = off
+                                            // 起点是单元格内局部坐标，换算成面板内坐标再参与判定
+                                            dragPos = off + cellOffsetInPanel
                                             inDropZone = false
                                         },
                                         onDrag = { change, amount ->
                                             change.consume()
                                             dragPos += amount
-                                            // 拖到面板上方 34% 区域即为拖放区
+                                            // 拖到面板顶部 34% 区域即为拖放区（同一坐标系比较）
                                             inDropZone = dragPos.y < panelHeightPx * 0.34f
                                         },
                                         onDragEnd = {
@@ -224,6 +235,13 @@ fun AlbumPanel(
                                             inDropZone = false
                                         },
                                     )
+                                }
+                                .onGloballyPositioned { coords ->
+                                    // 记录单元格相对面板左上角的偏移，供拖动换算坐标
+                                    if (panelTopInWindow >= 0f) {
+                                        val p = coords.positionInWindow()
+                                        cellOffsetInPanel = Offset(p.x - panelLeftInWindow, p.y - panelTopInWindow)
+                                    }
                                 }
                                 .clickable {
                                     selected = if (index >= 0) {
@@ -270,9 +288,10 @@ fun AlbumPanel(
         Box(
             Modifier
                 .offset {
+                    // dragPos 是面板内坐标，预览是全屏浮层，加上面板在窗口中的偏移
                     IntOffset(
-                        (dragPos.x - with(density) { 40.dp.toPx() }).roundToInt(),
-                        (dragPos.y - with(density) { 40.dp.toPx() }).roundToInt(),
+                        (dragPos.x + panelLeftInWindow - with(density) { 40.dp.toPx() }).roundToInt(),
+                        (dragPos.y + panelTopInWindow.coerceAtLeast(0f) - with(density) { 40.dp.toPx() }).roundToInt(),
                     )
                 }
                 .size(80.dp)

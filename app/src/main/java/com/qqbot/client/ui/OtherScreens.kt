@@ -168,6 +168,7 @@ fun MeScreen(
     albumMode: AlbumMode,
     onAlbumModeChange: (AlbumMode) -> Unit,
     cacheBytes: Long = 0L,
+    onCopyOpenId: (String) -> Unit = {},
     onAddBot: () -> Unit,
     onSwitch: (String) -> Unit,
     onLogout: (String) -> Unit,
@@ -190,6 +191,18 @@ fun MeScreen(
                 Text(account?.botName ?: "未登录", fontSize = 18.sp, fontWeight = FontWeight.Medium, color = QQ.TextPrimary)
                 Spacer(Modifier.height(4.dp))
                 Text("AppID: ${account?.appId ?: "-"}", fontSize = 12.sp, color = QQ.TextSecondary)
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    "OpenID: ${account?.botOpenId?.ifEmpty { "未获取" } ?: "-"}",
+                    fontSize = 11.sp,
+                    color = QQ.TextHint,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    modifier = Modifier.clickable {
+                        val id = account?.botOpenId
+                        if (!id.isNullOrEmpty()) onCopyOpenId(id)
+                    },
+                )
             }
             StatusDot(gateway)
         }

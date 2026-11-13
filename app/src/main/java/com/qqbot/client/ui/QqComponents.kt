@@ -64,7 +64,7 @@ fun QqAvatar(
 
 @Composable
 private fun AsyncImageWithFallback(url: String, fallbackText: String, size: Dp) {
-    var failed = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    var failed = androidx.compose.runtime.remember(url) { androidx.compose.runtime.mutableStateOf(false) }
     if (failed.value) {
         Text(
             text = fallbackText.take(1).uppercase(),

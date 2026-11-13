@@ -410,6 +410,12 @@ class OpenApiClient(
     /** 获取 WS 网关地址 */
     suspend fun getGatewayUrl(): ApiResult = request("GET", "/gateway/bot")
 
+    /**
+     * 获取机器人自己的信息。
+     * 返回：id（机器人 openid）、username（昵称）、avatar（真实头像 URL）、share_url。
+     */
+    suspend fun getSelfInfo(): ApiResult = request("GET", "/users/@me")
+
     // 注意：Byte 是有符号的，"%02x".format(byte) 会得到 ffffffff 这类 8 位结果，
     // 这里必须先把字节转成无符号整数，否则 md5/sha1 校验值完全错误（分片上传必失败）。
     private fun md5Hex(b: ByteArray): String = digestHex("MD5", b)

@@ -18,11 +18,14 @@ data class BotAccount(
     val appId: String,
     val appSecret: String,
     val botName: String,
+    /** 机器人自己的 openid，来自 /users/@me */
     val botOpenId: String = "",
     val apiVersion: QqBotConfig.ApiVersion = QqBotConfig.ApiVersion.NEW,
+    /** 机器人真实头像 URL（/users/@me 返回，带签名有时效） */
+    val avatar: String = "",
 ) {
     val avatarUrl: String
-        get() = if (botOpenId.isNotEmpty()) QqBotConfig.memberAvatar(appId, botOpenId) else ""
+        get() = avatar
 }
 
 /** 会话（群聊或单聊） */
@@ -80,6 +83,7 @@ class StorageManager(context: Context) {
                     appSecret = o.optString("appSecret"),
                     botName = o.optString("botName"),
                     botOpenId = o.optString("botOpenId"),
+                    avatar = o.optString("avatar"),
                     apiVersion = runCatching {
                         QqBotConfig.ApiVersion.valueOf(o.optString("apiVersion", QqBotConfig.ApiVersion.NEW.name))
                     }.getOrDefault(QqBotConfig.ApiVersion.NEW),
@@ -99,6 +103,7 @@ class StorageManager(context: Context) {
                     put("appSecret", a.appSecret)
                     put("botName", a.botName)
                     put("botOpenId", a.botOpenId)
+                    put("avatar", a.avatar)
                     put("apiVersion", a.apiVersion.name)
                 }
             )
