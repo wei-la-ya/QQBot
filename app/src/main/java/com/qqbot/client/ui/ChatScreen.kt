@@ -1,0 +1,833 @@
+package com.qqbot.client.ui
+
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
+import com.qqbot.client.R
+import com.qqbot.client.bot.ChatMessage
+import com.qqbot.client.bot.GroupMember
+import com.qqbot.client.bot.MessageSegment
+import com.qqbot.client.data.BotAccount
+import com.qqbot.client.data.Conversation
+import com.qqbot.client.vm.PendingSend
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.launch
+
+/**
+ * 聊天页（QQ AIO 界面）。
+ *
+ * 已对齐的 QQ 交互：
+ *  - 长按消息 → 浮动菜单（引用 / 撤回 / 复制 / 查看资料）
+ *  - 按住消息向左滑动 → 松手引用（带回弹动画与图标反馈）
+ *  - 输入框输入 @ → 向上弹出成员候选列表（左头像右昵称），选中后蓝色高亮
+ *  - 上滑自动加载更早消息，下滑回到底部
+ */
+@Composable
+fun ChatScreen(
+    conversation: Conversation,
+    messages: List<ChatMessage>,
+    account: BotAccount?,
+    members: List<GroupMember>,
+    pendingSends: List<PendingSend>,
+    hasMoreOlder: Boolean,
+    loadingOlder: Boolean,
+    markdownMode: Boolean,
+    highlightMsgId: String?,
+    onToggleMarkdown: (Boolean) -> Unit,
+    onBack: () -> Unit,
+    onLoadOlder: () -> Unit,
+    onSend: (text: String, quoted: ChatMessage?, atMembers: List<GroupMember>, atEveryone: Boolean) -> Unit,
+    /** 图文混发：附件与文字一起发送 */
+    onSendWithAttachments: (
+        text: String,
+        quoted: ChatMessage?,
+        atMembers: List<GroupMember>,
+        atEveryone: Boolean,
+        attachments: List<android.net.Uri>,
+    ) -> Unit = { t, q, a, e, _ -> onSend(t, q, a, e) },
+    /** 选图后挂起的待发送附件 */
+    onAttachmentsPicked: (List<android.net.Uri>) -> Unit = {},
+    onPickImage: () -> Unit,
+    onPickVideo: () -> Unit,
+    onPickCamera: () -> Unit,
+    onRecall: (String) -> Unit,
+    onShowInfo: () -> Unit,
+    onShowMemberCard: (GroupMember) -> Unit,
+    onSearch: () -> Unit,
+    onSeenHighlight: () -> Unit,
+    onImageClick: (String) -> Unit = {},
+    /** 外部要求插入到输入框的文本（长按头像 / 资料卡「提醒TA」） */
+    insertText: String? = null,
+    onInsertConsumed: () -> Unit = {},
+    /** 由外部持有的待发送附件（相册选完图后挂起，可继续输入文字一起发） */
+    attachments: List<android.net.Uri> = emptyList(),
+    onAttachmentsChange: (List<android.net.Uri>) -> Unit = {},
+    albumVisible: Boolean = false,
+    albumMode: AlbumMode = AlbumMode.HALF,
+    albumVideoMode: Boolean = false,
+    onAlbumDismiss: () -> Unit = {},
+    onAlbumConfirm: (List<android.net.Uri>) -> Unit = {},
+    onAlbumDragToChat: (android.net.Uri) -> Unit = {},
+) {
+    var draft by remember(conversation.chatKey) { mutableStateOf("") }
+
+    // 外部插入 @昵称：追加到草稿末尾并自动补空格（与 QQ 长按头像行为一致）
+    LaunchedEffect(insertText) {
+        val ins = insertText
+        if (!ins.isNullOrEmpty()) {
+            draft = if (draft.isEmpty() || draft.endsWith(" ") || draft.endsWith("\n")) {
+                draft + ins
+            } else {
+                "$draft $ins"
+            }
+            onInsertConsumed()
+        }
+    }
+    var quote by remember(conversation.chatKey) { mutableStateOf<ChatMessage?>(null) }
+    var showPlus by remember { mutableStateOf(false) }
+    var menuFor by remember { mutableStateOf<ChatMessage?>(null) }
+    var atEveryone by remember(conversation.chatKey) { mutableStateOf(false) }
+    var showMemberPicker by remember { mutableStateOf(false) }
+    // 待发送的附件：由外部（相册）持有，这里只读
+    val pendingAttachments = attachments
+    val scope = rememberCoroutineScope()
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+
+    val listState = rememberLazyListState()
+
+    val atBottom by remember {
+        derivedStateOf {
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.lastOrNull() ?: return@derivedStateOf true
+            last.index >= info.totalItemsCount - 2
+        }
+    }
+
+    // 进入会话：等消息真正加载完成（非空）后，无动画直接落到底部最新消息
+    var initialScrollDone by remember(conversation.chatKey) { mutableStateOf(false) }
+    LaunchedEffect(conversation.chatKey, messages.isNotEmpty()) {
+        if (!initialScrollDone && messages.isNotEmpty()) {
+            // 等下一帧，让 LazyColumn 完成首次测量，再滚到最后一条
+            kotlinx.coroutines.delay(16)
+            val lastIndex = (listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0)
+            listState.scrollToItem(lastIndex)
+            initialScrollDone = true
+        }
+    }
+
+    // 后续新消息：只有本来就贴着底部时才自动跟随
+    LaunchedEffect(messages.size) {
+        if (initialScrollDone && atBottom && messages.isNotEmpty()) {
+            listState.animateScrollToItem((listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0))
+        }
+    }
+    LaunchedEffect(conversation.chatKey, hasMoreOlder) {
+        if (!hasMoreOlder) return@LaunchedEffect
+        snapshotFlow {
+            listState.layoutInfo.visibleItemsInfo.firstOrNull()?.index ?: 0
+        }.distinctUntilChanged().collect { firstIndex ->
+            if (firstIndex <= 3 && hasMoreOlder) onLoadOlder()
+        }
+    }
+    LaunchedEffect(highlightMsgId) {
+        if (highlightMsgId != null) {
+            val idx = messages.indexOfFirst { it.id == highlightMsgId }
+            if (idx >= 0) listState.animateScrollToItem(idx)
+            kotlinx.coroutines.delay(1200)
+            onSeenHighlight()
+        }
+    }
+
+    Box(Modifier.fillMaxSize()) {
+    Column(
+        Modifier.fillMaxSize().background(QQ.PageBg).imePadding()
+    ) {
+        // ===== 顶部标题栏 =====
+        Row(
+            Modifier.fillMaxWidth().height(QQ.TitleBarHeight).background(QQ.TitleBarBg),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            BackButton(onBack)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.weight(1f).clickable { onShowInfo() },
+            ) {
+                Text(
+                    text = if (conversation.isGroup && conversation.memberCount > 0)
+                        "${conversation.title}(${conversation.memberCount})" else conversation.title,
+                    fontSize = QQ.TitleSize, color = QQ.TextPrimary, fontWeight = FontWeight.Medium,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.widthIn(max = 190.dp),
+                )
+                Text(" ›", fontSize = 17.sp, color = QQ.TextSecondary)
+            }
+            Text(
+                "查找", fontSize = 14.sp, color = QQ.TextPrimary,
+                modifier = Modifier.padding(horizontal = 8.dp).clickable { onSearch() },
+            )
+            Text(
+                "···", fontSize = 18.sp, color = QQ.TextPrimary,
+                modifier = Modifier.padding(horizontal = 10.dp).clickable { showMemberPicker = true },
+            )
+        }
+
+        // ===== 消息列表（相册打开且为半屏时，聊天区与相册各占一半：weight 1:1）=====
+        Box(Modifier.weight(1f)) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 8.dp),
+            ) {
+                if (hasMoreOlder) {
+                    item(key = "__loading__") {
+                        Row(
+                            Modifier.fillMaxWidth().padding(10.dp),
+                            horizontalArrangement = Arrangement.Center,
+                        ) {
+                            if (loadingOlder) {
+                                CircularProgressIndicator(
+                                    color = QQ.Blue, strokeWidth = 2.dp, modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text("加载中…", fontSize = 12.sp, color = QQ.TextSecondary)
+                            } else {
+                                Text("上滑加载更多", fontSize = 12.sp, color = QQ.TextHint)
+                            }
+                        }
+                    }
+                } else if (messages.isNotEmpty()) {
+                    item(key = "__no_more__") {
+                        Text(
+                            "没有更多消息了", fontSize = 11.sp, color = QQ.TextHint,
+                            modifier = Modifier.fillMaxWidth().padding(8.dp),
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        )
+                    }
+                }
+
+                items(messages, key = { it.id }) { msg ->
+                    SwipeQuoteRow(
+                        msg = msg,
+                        onQuote = { quote = msg },
+                    ) {
+                        MessageRow(
+                            msg = msg,
+                            isGroup = conversation.isGroup,
+                            appId = account?.appId ?: "",
+                            selfAvatar = account?.avatarUrl ?: "",
+                            selfName = account?.botName ?: "",
+                            highlighted = msg.id == highlightMsgId,
+                            onLongPress = { if (!msg.recalled) menuFor = msg },
+                            onAvatarClick = {
+                                if (!msg.isSelf && conversation.isGroup) {
+                                    val m = members.firstOrNull { it.openId == msg.senderOpenId }
+                                        ?: GroupMember(msg.senderOpenId, msg.senderName)
+                                    onShowMemberCard(m)
+                                }
+                            },
+                            onAvatarLongPress = {
+                                // 长按头像 = @ 该用户：把 @昵称 + 空格 插入输入框
+                                if (!msg.isSelf && msg.senderName.isNotEmpty()) {
+                                    val insert = "@${msg.senderName} "
+                                    draft = if (draft.isEmpty() || draft.endsWith(" ") || draft.endsWith("\n")) {
+                                        draft + insert
+                                    } else {
+                                        "$draft $insert"
+                                    }
+                                }
+                            },
+                            onImageClick = onImageClick,
+                        )
+                    }
+                    MessageMenu(
+                        expanded = menuFor?.id == msg.id,
+                        msg = msg,
+                        onDismiss = { menuFor = null },
+                        onQuote = { quote = msg; menuFor = null },
+                        onRecall = { onRecall(msg.messageId); menuFor = null },
+                        onCopy = {
+                            clipboard.setText(androidx.compose.ui.text.AnnotatedString(msg.text))
+                            menuFor = null
+                        },
+                        onProfile = {
+                            onShowMemberCard(GroupMember(msg.senderOpenId, msg.senderName))
+                            menuFor = null
+                        },
+                    )
+                }
+
+                items(pendingSends, key = { it.localId }) { p ->
+                    PendingRow(p, selfAvatar = account?.avatarUrl ?: "", selfName = account?.botName ?: "")
+                }
+            }
+        }
+
+        // ===== 引用条（QQ 样式：浅底 + 0.5dp 描边 + 左侧蓝条）=====
+        quote?.let { q ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                    .background(Color(0xFFF5F6FA), RoundedCornerShape(6.dp))
+                    .padding(vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(Modifier.width(2.dp).height(30.dp).background(QQ.Blue))
+                Spacer(Modifier.width(8.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        q.senderName,
+                        fontSize = 11.sp, color = QQ.TextSecondary,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        q.text.take(40).ifEmpty { "[消息]" },
+                        fontSize = 12.sp, color = QQ.TextHint,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Text(
+                    "×", fontSize = 18.sp, color = QQ.TextSecondary,
+                    modifier = Modifier.clickable { quote = null }.padding(horizontal = 8.dp),
+                )
+            }
+        }
+
+        // @全体成员提示
+        if (atEveryone) {
+            Row(
+                Modifier.fillMaxWidth().background(Color.White).padding(horizontal = 12.dp, vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("@全体成员", fontSize = 12.sp, color = QQ.Blue, modifier = Modifier.weight(1f))
+                Text(
+                    "×", fontSize = 16.sp, color = QQ.TextSecondary,
+                    modifier = Modifier.clickable { atEveryone = false }.padding(horizontal = 6.dp),
+                )
+            }
+        }
+
+        // ===== 普通 / MD 切换 =====
+        ModeSwitchBar(markdownMode, onToggleMarkdown)
+
+        // ===== 输入栏 =====
+        ChatInputBar(
+            draft = draft,
+            onDraftChange = { draft = it },
+            members = members,
+            appId = account?.appId ?: "",
+            showPlus = showPlus,
+            onTogglePlus = { showPlus = !showPlus },
+            onSend = {
+                if (draft.isNotBlank() || atEveryone || pendingAttachments.isNotEmpty()) {
+                    val picked = parseAtChips(draft, members).map { chip ->
+                        members.firstOrNull { it.openId == chip.openId }
+                            ?: GroupMember(chip.openId, chip.nickname)
+                    }.distinctBy { it.openId }
+                    // 图文混发：附件与文字一起交给上层发送
+                    onSendWithAttachments(draft.trim(), quote, picked, atEveryone, pendingAttachments)
+                    onAttachmentsChange(emptyList())
+                    draft = ""
+                    quote = null
+                    atEveryone = false
+                }
+            },
+            onPickImage = { showPlus = false; onPickImage() },
+            onPickVideo = { showPlus = false; onPickVideo() },
+            onPickCamera = { showPlus = false; onPickCamera() },
+            onAtEveryone = { atEveryone = true },
+            attachments = pendingAttachments,
+            onRemoveAttachment = { uri -> onAttachmentsChange(pendingAttachments.filter { it != uri }) },
+        )
+
+        // ===== 相册面板（半屏时与聊天区各占一半高度，全屏时铺满）=====
+        if (albumVisible) {
+            if (albumMode == AlbumMode.HALF) {
+                // 同列兄弟节点：聊天区 weight=1，相册 weight=1 → 上半聊天、下半相册
+                Box(Modifier.weight(1f)) {
+                    AlbumPanel(
+                        visible = true,
+                        mode = AlbumMode.HALF,
+                        videoMode = albumVideoMode,
+                        onDismiss = onAlbumDismiss,
+                        onConfirm = onAlbumConfirm,
+                        onDragToChat = onAlbumDragToChat,
+                    )
+                }
+            } else {
+                // 全屏相册不参与列布局，改为覆盖在聊天页之上（见下方 Box）
+            }
+        }
+    }
+
+    // 全屏相册：覆盖整页
+    if (albumVisible && albumMode == AlbumMode.FULL) {
+        Box(Modifier.fillMaxSize()) {
+            AlbumPanel(
+                visible = true,
+                mode = AlbumMode.FULL,
+                videoMode = albumVideoMode,
+                onDismiss = onAlbumDismiss,
+                onConfirm = onAlbumConfirm,
+                onDragToChat = onAlbumDragToChat,
+            )
+        }
+    }
+    }
+
+    // 群成员选择（右上 ···）
+    if (showMemberPicker) {
+        MemberListSheet(
+            members = members,
+            appId = account?.appId ?: "",
+            onDismiss = { showMemberPicker = false },
+            onPick = {
+                showMemberPicker = false
+                onShowMemberCard(it)
+            },
+        )
+    }
+}
+
+@Composable
+private fun ModeSwitchBar(markdown: Boolean, onToggle: (Boolean) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().background(Color(0xFFF7F7F9)).padding(horizontal = 10.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        SegmentChip("普通", selected = !markdown) { onToggle(false) }
+        Spacer(Modifier.width(6.dp))
+        SegmentChip("MD", selected = markdown) { onToggle(true) }
+        Spacer(Modifier.weight(1f))
+        Text(
+            text = if (markdown) "Markdown：支持语法与插图" else "普通文本",
+            fontSize = 11.sp, color = QQ.TextHint,
+        )
+    }
+}
+
+@Composable
+private fun SegmentChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (selected) QQ.Blue else Color(0xFFE8E9EC))
+            .clickable { onClick() }
+            .padding(horizontal = 12.dp, vertical = 3.dp),
+    ) {
+        Text(
+            text = label, fontSize = 12.sp,
+            color = if (selected) Color.White else QQ.TextSecondary,
+            fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
+        )
+    }
+}
+
+/** 长按消息后的浮动菜单 */
+@Composable
+private fun MessageMenu(
+    expanded: Boolean,
+    msg: ChatMessage,
+    onDismiss: () -> Unit,
+    onQuote: () -> Unit,
+    onRecall: () -> Unit,
+    onCopy: () -> Unit,
+    onProfile: () -> Unit,
+) {
+    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+        DropdownMenuItem(text = { Text("引用") }, onClick = onQuote)
+        if (msg.isSelf && msg.messageId.isNotEmpty()) {
+            DropdownMenuItem(text = { Text("撤回") }, onClick = onRecall)
+        }
+        if (msg.text.isNotEmpty()) {
+            DropdownMenuItem(text = { Text("复制") }, onClick = onCopy)
+        }
+        if (!msg.isSelf && msg.senderOpenId.isNotEmpty()) {
+            DropdownMenuItem(text = { Text("查看资料") }, onClick = onProfile)
+        }
+    }
+}
+
+/** 访问剪贴板 */
+
+@Composable
+private fun PendingRow(p: PendingSend, selfAvatar: String, selfName: String) {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 5.dp),
+        horizontalArrangement = Arrangement.End,
+        verticalAlignment = Alignment.Top,
+    ) {
+        Column(horizontalAlignment = Alignment.End) {
+            when (p.kind) {
+                PendingSend.Kind.IMAGE, PendingSend.Kind.VIDEO -> AsyncImage(
+                    model = p.localUri,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.widthIn(max = 140.dp).clip(RoundedCornerShape(6.dp)),
+                )
+                PendingSend.Kind.TEXT -> Text(p.text, fontSize = QQ.BodySize)
+            }
+            Spacer(Modifier.height(3.dp))
+            Text(p.progress, fontSize = 11.sp, color = QQ.TextSecondary)
+        }
+        Spacer(Modifier.width(8.dp))
+        QqAvatar(url = selfAvatar.ifEmpty { null }, fallbackText = selfName.ifEmpty { "我" }, size = QQ.AvatarSizeSmall)
+    }
+}
+
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun MessageRow(
+    msg: ChatMessage,
+    isGroup: Boolean,
+    appId: String,
+    selfAvatar: String,
+    selfName: String,
+    highlighted: Boolean,
+    onLongPress: () -> Unit,
+    onAvatarClick: () -> Unit,
+    onAvatarLongPress: () -> Unit,
+    onImageClick: (String) -> Unit,
+) {
+    val self = msg.isSelf
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .then(if (highlighted) Modifier.background(Color(0x22FFD700)) else Modifier)
+            .padding(horizontal = 10.dp, vertical = 5.dp)
+            .combinedClickable(onClick = {}, onLongClick = onLongPress),
+        horizontalArrangement = if (self) Arrangement.End else Arrangement.Start,
+        verticalAlignment = Alignment.Top,
+    ) {
+        if (!self) {
+            Box(Modifier.combinedClickable(onClick = onAvatarClick, onLongClick = onAvatarLongPress)) {
+                QqAvatar(
+                    url = if (msg.senderOpenId.isNotEmpty() && appId.isNotEmpty())
+                        com.qqbot.client.bot.QqBotConfig.memberAvatar(appId, msg.senderOpenId) else null,
+                    fallbackText = msg.senderName,
+                    size = QQ.AvatarSizeSmall,
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+        }
+
+        Column(
+            horizontalAlignment = if (self) Alignment.End else Alignment.Start,
+            modifier = Modifier.widthIn(max = 270.dp),
+        ) {
+            if (!self && isGroup) {
+                Text(
+                    msg.senderName, fontSize = 11.sp, color = QQ.TextSecondary,
+                    modifier = Modifier.padding(start = 4.dp, bottom = 2.dp),
+                )
+            }
+            if (msg.recalled) {
+                Text(
+                    if (self) "你撤回了一条消息" else "${msg.senderName} 撤回了一条消息",
+                    fontSize = 12.sp, color = QQ.TextSecondary,
+                    modifier = Modifier.padding(vertical = 4.dp),
+                )
+            } else {
+                Bubble(msg, self, onImageClick)
+            }
+        }
+
+        if (self) {
+            Spacer(Modifier.width(8.dp))
+            QqAvatar(url = selfAvatar.ifEmpty { null }, fallbackText = selfName.ifEmpty { "我" }, size = QQ.AvatarSizeSmall)
+        }
+    }
+}
+
+@Composable
+private fun Bubble(msg: ChatMessage, self: Boolean, onImageClick: (String) -> Unit) {
+    Column(
+        Modifier
+            .clip(RoundedCornerShape(QQ.BubbleCorner))
+            .background(if (self) QQ.SelfBubble else QQ.OtherBubble)
+            .padding(horizontal = 12.dp, vertical = 9.dp),
+    ) {
+        msg.quote?.let { q ->
+            // QQ 的引用样式：左侧竖条 + 作者名 + 引用内容，整体比正文小一号
+            Row(
+                Modifier
+                    .widthIn(max = 200.dp)
+                    .background(
+                        if (self) Color(0x22FFFFFF) else Color(0xFFF5F6FA),
+                        RoundedCornerShape(4.dp),
+                    )
+                    .padding(vertical = 6.dp),
+            ) {
+                Box(
+                    Modifier
+                        .width(2.dp)
+                        .heightIn(min = 28.dp)
+                        .background(if (self) Color(0xCCFFFFFF) else QQ.Blue)
+                )
+                Spacer(Modifier.width(6.dp))
+                Column(Modifier.padding(end = 8.dp)) {
+                    Text(
+                        q.authorName,
+                        fontSize = 11.sp,
+                        color = if (self) Color(0xE6FFFFFF) else QQ.TextSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (q.text.isNotEmpty()) {
+                        Text(
+                            q.text,
+                            fontSize = 12.sp,
+                            color = if (self) Color(0xCCFFFFFF) else QQ.TextHint,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+        }
+        msg.segments.filter { it.kind == MessageSegment.Kind.IMAGE }.forEach { seg ->
+            // 点击图片全屏查看（长按仍交给外层的消息菜单/滑动引用）
+            Box(
+                Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .clickable(enabled = seg.url.isNotEmpty() || seg.localPath.isNotEmpty()) {
+                        onImageClick(seg.localPath.ifEmpty { seg.url })
+                    }
+            ) {
+                AsyncImage(
+                    model = seg.displayUri, contentDescription = null, contentScale = ContentScale.Crop,
+                    modifier = Modifier.widthIn(max = 200.dp).heightIn(min = 80.dp),
+                )
+            }
+            Spacer(Modifier.height(4.dp))
+        }
+        msg.segments.filter { it.kind == MessageSegment.Kind.VIDEO }.forEach {
+            Box(
+                Modifier.width(180.dp).aspectRatio(16f / 9f)
+                    .background(Color(0xFF2B2B2B), RoundedCornerShape(4.dp)),
+                contentAlignment = Alignment.Center,
+            ) { Text("▶", color = Color.White, fontSize = 28.sp) }
+            Spacer(Modifier.height(4.dp))
+        }
+        if (msg.text.isNotEmpty()) {
+            if (msg.markdown) {
+                MarkdownText(normalizeAt(msg.text), self, onImageClick = onImageClick)
+            } else {
+                Text(
+                    text = normalizeAt(msg.text), fontSize = QQ.BodySize, lineHeight = 21.sp,
+                    color = if (self) Color.White else QQ.TextPrimary,
+                )
+            }
+        }
+    }
+}
+
+/** 把 md 里的 <qqbot-at-user> / <qqbot-at-everyone> 还原成可读的 @昵称（服务端一般已转好，这里兜底） */
+private fun normalizeAt(text: String): String {
+    if (!text.contains("<qqbot-at")) return text
+    var s = text
+    s = Regex("""<qqbot-at-user\s+id="([^"]*)"\s*/>""").replace(s) { m ->
+        val id = m.groupValues[1]
+        "@" + if (id.length > 8) id.takeLast(8) else id
+    }
+    s = s.replace("<qqbot-at-everyone />", "@全体成员")
+    return s
+}
+
+@Composable
+private fun ChatInputBar(
+    draft: String,
+    onDraftChange: (String) -> Unit,
+    members: List<GroupMember>,
+    appId: String,
+    showPlus: Boolean,
+    onTogglePlus: () -> Unit,
+    onSend: () -> Unit,
+    onPickImage: () -> Unit,
+    onPickVideo: () -> Unit,
+    onPickCamera: () -> Unit,
+    onAtEveryone: () -> Unit,
+    attachments: List<android.net.Uri> = emptyList(),
+    onRemoveAttachment: (android.net.Uri) -> Unit = {},
+) {
+    Column(Modifier.fillMaxWidth().background(Color(0xFFF7F7F9))) {
+        // 待发送图片预览（图文混发）
+        if (attachments.isNotEmpty()) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                attachments.take(9).forEach { uri ->
+                    Box(Modifier.size(60.dp)) {
+                        AsyncImage(
+                            model = uri,
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(4.dp)),
+                        )
+                        Box(
+                            Modifier.align(Alignment.TopEnd).size(18.dp)
+                                .background(Color(0x99000000), CircleShape)
+                                .clickable { onRemoveAttachment(uri) },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text("×", color = Color.White, fontSize = 11.sp)
+                        }
+                    }
+                }
+            }
+        }
+        // 输入框
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.Bottom,
+        ) {
+            Box(
+                Modifier.weight(1f).heightIn(min = 38.dp, max = 140.dp)
+                    .clip(RoundedCornerShape(6.dp)).background(Color.White)
+                    .padding(horizontal = 10.dp, vertical = 9.dp),
+            ) {
+                MentionTextField(
+                    value = draft,
+                    onValueChange = onDraftChange,
+                    members = members,
+                    appId = appId,
+                    placeholder = "输入消息",
+                    modifier = Modifier.fillMaxWidth(),
+                    onPickEveryone = onAtEveryone,
+                )
+            }
+            Spacer(Modifier.width(4.dp))
+
+            if (draft.isNotEmpty()) {
+                Box(
+                    Modifier.height(38.dp).background(QQ.Blue, RoundedCornerShape(6.dp))
+                        .clickable { onSend() }.padding(horizontal = 14.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("发送", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                }
+            }
+        }
+
+        // 输入框下方的功能栏（顺序与手机 QQ 一致：语音 / 图片 / 相机 / 表情 / 加号）
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            InputIcon(R.drawable.skin_aio_voice_nor, "语音") { /* 语音待接入 SILK */ }
+            InputIcon(R.drawable.qui_image_aio_oversized, "图片") { onPickImage() }
+            InputIcon(R.drawable.qui_camera_aio_oversized, "相机") { onPickCamera() }
+            InputIcon(R.drawable.qui_emoticon_aio_oversized, "表情") {
+                onDraftChange(draft + "😊")
+            }
+            Spacer(Modifier.weight(1f))
+            // 加号：更多发送方式
+            Box(
+                Modifier.size(36.dp).clickable { onTogglePlus() },
+                contentAlignment = Alignment.Center,
+            ) {
+                Image(
+                    painter = painterResource(
+                        if (showPlus) R.drawable.skin_aio_more_pressed else R.drawable.skin_aio_more_nor
+                    ),
+                    contentDescription = "更多", modifier = Modifier.size(24.dp),
+                )
+            }
+        }
+
+        if (showPlus) {
+            Row(
+                Modifier.fillMaxWidth().background(Color.White).padding(vertical = 16.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+            ) {
+                PlusItem("相册") { onPickImage() }
+                PlusItem("拍摄") { onPickCamera() }
+                PlusItem("视频") { onPickVideo() }
+                PlusItem("@全体") { onAtEveryone(); onTogglePlus() }
+            }
+        }
+    }
+}
+
+/** 输入栏下方的一个功能图标 */
+@Composable
+private fun InputIcon(icon: Int, label: String, onClick: () -> Unit) {
+    Box(
+        Modifier.size(38.dp).clickable { onClick() },
+        contentAlignment = Alignment.Center,
+    ) {
+        Image(
+            painter = painterResource(icon),
+            contentDescription = label,
+            modifier = Modifier.size(24.dp),
+        )
+    }
+}
+
+@Composable
+private fun PlusItem(label: String, onClick: () -> Unit) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.clickable { onClick() }.padding(12.dp),
+    ) {
+        Box(Modifier.size(52.dp).background(Color(0xFFF2F3F5), RoundedCornerShape(8.dp)))
+        Spacer(Modifier.height(6.dp))
+        Text(label, fontSize = 12.sp, color = QQ.TextSecondary)
+    }
+}

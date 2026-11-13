@@ -1,0 +1,33 @@
+# ---- 构建产物 ----
+build/
+*.apk
+*.aab
+*.ap_
+*.idsig
+*.hprof
+
+# ---- Gradle ----
+.gradle/
+gradle/wrapper/gradle-wrapper.jar.bak
+!gradle/wrapper/gradle-wrapper.jar
+local.properties
+
+# ---- 签名密钥（绝对不要提交）----
+keystore.jks
+*.jks
+*.keystore
+keystore.properties
+signing.properties
+
+# ---- IDE ----
+.idea/
+*.iml
+.vscode/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# ---- 系统 ----
+.DS_Store
+Thumbs.db
+*.log
