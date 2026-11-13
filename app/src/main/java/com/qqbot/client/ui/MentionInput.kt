@@ -67,7 +67,8 @@ data class AtChip(
  * 性能：预先建好「首字 → 候选昵称」的桶，避免每次输入都对全部成员做 startsWith。
  */
 fun parseAtChips(text: String, members: List<GroupMember>): List<AtChip> {
-    if (members.isEmpty() || text.indexOf('@') < 0) return emptyList()
+    if (text.indexOf('@') < 0) return emptyList()
+    val everyoneName = com.qqbot.client.bot.AtSyntax.EVERYONE_NAME
     val buckets = HashMap<Char, MutableList<GroupMember>>()
     members.forEach { m ->
         if (m.nickname.isNotEmpty()) {
@@ -78,6 +79,12 @@ fun parseAtChips(text: String, members: List<GroupMember>): List<AtChip> {
     var idx = text.indexOf('@')
     while (idx >= 0) {
         val afterAt = idx + 1
+        // @全体成员 优先匹配（用于输入框内显示蓝色标签）
+        if (text.regionMatches(afterAt, everyoneName, 0, everyoneName.length)) {
+            chips.add(AtChip(idx, "@$everyoneName ", "ALL", everyoneName))
+            idx = text.indexOf('@', afterAt + everyoneName.length)
+            continue
+        }
         if (afterAt < text.length) {
             val cands = buckets[text[afterAt]]
             if (cands != null) {

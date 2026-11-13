@@ -86,7 +86,7 @@ private fun QQApp(vm: MainViewModel = viewModel()) {
     var shareImage by remember { mutableStateOf<String?>(null) }
     // 需要插入到输入框的文本（来自长按头像 / 资料卡「提醒TA」）
     var pendingInsert by remember { mutableStateOf<String?>(null) }
-    // 待发送的图片附件（图文混发）
+    // 相册里勾选中的图片（关闭相册后仍保留，用于图文混发）
     var pendingAttachments by remember { mutableStateOf<List<Uri>>(emptyList()) }
     // 图片缓存占用（进设置页时刷新）
     var cacheBytes by remember { mutableStateOf(0L) }
@@ -118,14 +118,15 @@ private fun QQApp(vm: MainViewModel = viewModel()) {
         ActivityResultContracts.RequestMultiplePermissions()
     ) { showAlbum = true }
 
-    // 拍照：用 TakePicture 写到应用私有缓存，拍完作为待发送附件
+    // 拍照：写到应用私有缓存，拍完直接发送（与 QQ 一致）
     var cameraUri by remember { mutableStateOf<Uri?>(null) }
     val cameraLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.TakePicture()
     ) { ok ->
         val uri = cameraUri
-        if (ok && uri != null) {
-            pendingAttachments = pendingAttachments + uri
+        val chatKey = state.activeChatKey
+        if (ok && uri != null && chatKey != null) {
+            vm.sendImage(chatKey, uri)
         }
         cameraUri = null
     }
@@ -250,34 +251,49 @@ private fun QQApp(vm: MainViewModel = viewModel()) {
                 albumMode = albumMode,
                 albumVideoMode = albumVideoMode,
                 onAlbumDismiss = { showAlbum = false },
+                // 相册里勾选后点「发送」：直接发送（QQ 行为）
                 onAlbumConfirm = { uris ->
-                    if (albumVideoMode) {
-                        // 视频没有图文混发，直接发
-                        uris.forEach { vm.sendVideo(activeConv.chatKey, it) }
-                    } else {
-                        // 图片先挂成待发送附件，可以继续输入文字后一起发
-                        pendingAttachments = pendingAttachments + uris
-                    }
                     showAlbum = false
+                    pendingAttachments = emptyList()
+                    if (uris.isNotEmpty()) {
+                        if (albumVideoMode) {
+                            uris.forEach { vm.sendVideo(activeConv.chatKey, it) }
+                        } else {
+                            vm.sendImages(activeConv.chatKey, uris)
+                        }
+                    }
                 },
+                // 拖到聊天区松手：立即发送
                 onAlbumDragToChat = { uri ->
                     showAlbum = false
                     if (albumVideoMode) vm.sendVideo(activeConv.chatKey, uri)
-                    else pendingAttachments = pendingAttachments + uri
+                    else vm.sendImage(activeConv.chatKey, uri)
                 },
+                // 相册内勾选：记到待发送，关闭相册后仍可在输入框上方看到
                 attachments = pendingAttachments,
                 onAttachmentsChange = { pendingAttachments = it },
+                // 图文混发：相册里勾图 + 输入框有文字时点发送，一起发
                 onSendWithAttachments = { text, quoted, atMembers, atEveryone, atts ->
-                    vm.sendTextWithAttachments(
-                        chatKey = activeConv.chatKey,
-                        rawText = text,
-                        quoteMessageId = quoted?.messageId?.ifEmpty { quoted.id },
-                        atMembers = atMembers,
-                        atEveryone = atEveryone,
-                        quoted = quoted,
-                        attachments = atts,
-                    )
-                    pendingAttachments = emptyList()
+                    if (atts.isNotEmpty()) {
+                        vm.sendTextWithAttachments(
+                            chatKey = activeConv.chatKey,
+                            rawText = text,
+                            quoteMessageId = quoted?.messageId?.ifEmpty { quoted.id },
+                            atMembers = atMembers,
+                            atEveryone = atEveryone,
+                            quoted = quoted,
+                            attachments = atts,
+                        )
+                    } else {
+                        vm.sendText(
+                            chatKey = activeConv.chatKey,
+                            rawText = text,
+                            quoteMessageId = quoted?.messageId?.ifEmpty { quoted.id },
+                            atMembers = atMembers,
+                            atEveryone = atEveryone,
+                            quoted = quoted,
+                        )
+                    }
                 },
             )
         }

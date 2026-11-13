@@ -76,6 +76,18 @@ class AtSyntaxTest {
     }
 
     @Test
+    fun `艾特全体走文本识别不进入待发送`() {
+        // 输入框里插入的是「@全体成员 」文本，发送时由此识别为全体艾特
+        val draft = "@全体成员 开会了"
+        assertTrue(draft.contains("@${AtSyntax.EVERYONE_NAME}"))
+        // 生产代码里对应生成的官方语法
+        assertEquals("<qqbot-at-everyone />", AtSyntax.everyone())
+        // 文本部分的 @全体成员 应当被移除，避免重复
+        val cleaned = draft.replace("@${AtSyntax.EVERYONE_NAME}", "").trim()
+        assertEquals("开会了", cleaned)
+    }
+
+    @Test
     fun `超长消息判定`() {
         assertFalse(MarkdownBuilder.isTooLong("短消息"))
         assertTrue(MarkdownBuilder.isTooLong("啊".repeat(2000))) // 6000 字节

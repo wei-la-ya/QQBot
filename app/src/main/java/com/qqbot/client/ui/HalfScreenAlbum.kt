@@ -95,10 +95,15 @@ fun AlbumPanel(
     onDismiss: () -> Unit,
     onConfirm: (List<Uri>) -> Unit,
     onDragToChat: (Uri) -> Unit,
+    /** 已勾选的图片（由外部持有，关闭相册后仍保留，用于图文混发） */
+    initialSelected: List<Uri> = emptyList(),
+    /** 勾选变化时回传，外部据此更新待发送附件 */
+    onSelectionChange: (List<Uri>) -> Unit = {},
 ) {
     val context = LocalContext.current
     var items by remember { mutableStateOf<List<AlbumItem>>(emptyList()) }
-    var selected by remember { mutableStateOf<List<Uri>>(emptyList()) }
+    // 勾选状态由外部持有：关闭相册后仍保留，供图文混发使用
+    val selected = initialSelected
     var loading by remember { mutableStateOf(true) }
 
     // 拖拽状态
@@ -117,7 +122,6 @@ fun AlbumPanel(
         loading = true
         items = withContext(Dispatchers.IO) { loadAlbum(context, videoMode) }
         loading = false
-        selected = emptyList()
         dragging = null
         inDropZone = false
     }
@@ -244,12 +248,13 @@ fun AlbumPanel(
                                     }
                                 }
                                 .clickable {
-                                    selected = if (index >= 0) {
+                                    val next = if (index >= 0) {
                                         selected.filter { it != item.uri }
                                     } else {
                                         if (videoMode && selected.isNotEmpty()) listOf(item.uri)
                                         else (selected + item.uri).take(9)
                                     }
+                                    onSelectionChange(next)
                                 }
                         ) {
                             AsyncImage(

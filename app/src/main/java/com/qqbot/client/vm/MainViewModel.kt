@@ -588,22 +588,26 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         quoted: ChatMessage? = null,
     ) {
         val text = rawText.trim()
-        if (text.isEmpty() && atMembers.isEmpty() && !atEveryone) return
+        // 输入框里的「@全体成员」文本同样视为全体艾特（与 QQ 一致：插入的是标签文本）
+        val everyoneInText = text.contains("@${com.qqbot.client.bot.AtSyntax.EVERYONE_NAME}")
+        val finalAtEveryone = atEveryone || everyoneInText
+        if (text.isEmpty() && atMembers.isEmpty() && !finalAtEveryone) return
         val account = _state.value.currentAccount ?: return
         val target = targetOf(chatKey)
         val isGroup = target is ChatTarget.Group
 
-        val needMd = _state.value.markdownMode || atMembers.isNotEmpty() || atEveryone || !quoteMessageId.isNullOrEmpty()
+        val needMd = _state.value.markdownMode || atMembers.isNotEmpty() || finalAtEveryone || !quoteMessageId.isNullOrEmpty()
         val body = if (needMd) {
-            // 先把输入里的"@昵称"移除（避免重复），再统一加上官方提及语法
+            // 先把输入里的"@昵称"与"@全体成员"移除（避免重复），再统一加上官方提及语法
             var t = text
             atMembers.forEach { m -> t = t.replace("@${m.nickname}", "").trim() }
+            t = t.replace("@${com.qqbot.client.bot.AtSyntax.EVERYONE_NAME}", "").trim()
             buildString {
                 atMembers.forEach { m ->
                     append(com.qqbot.client.bot.AtSyntax.user(m.openId))
                 }
-                if (atEveryone) append(com.qqbot.client.bot.AtSyntax.everyone())
-                if (atMembers.isNotEmpty() || atEveryone) append(' ')
+                if (finalAtEveryone) append(com.qqbot.client.bot.AtSyntax.everyone())
+                if (atMembers.isNotEmpty() || finalAtEveryone) append(' ')
                 append(
                     when {
                         // 普通模式：一律按纯文本发送（严格转义，任何语法都不会生效）
@@ -677,12 +681,30 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         sendMedia(chatKey, uri, isVideo = false, caption = caption)
     }
 
+    /**
+     * 相册里勾选多张图后直接发送（QQ 行为：立即发出，不等文字）。
+     * 逐张排队发送，保证顺序。
+     */
+    fun sendImages(chatKey: String, uris: List<android.net.Uri>) {
+        viewModelScope.launch {
+            // 逐张发送并按顺序等待完成，避免并发上传导致顺序错乱
+            uris.forEach { uri ->
+                sendMedia(chatKey, uri, isVideo = false)?.join()
+            }
+        }
+    }
+
     fun sendVideo(chatKey: String, uri: android.net.Uri) {
         sendMedia(chatKey, uri, isVideo = true)
     }
 
-    private fun sendMedia(chatKey: String, uri: android.net.Uri, isVideo: Boolean, caption: String = "") {
-        val account = _state.value.currentAccount ?: return
+    private fun sendMedia(
+        chatKey: String,
+        uri: android.net.Uri,
+        isVideo: Boolean,
+        caption: String = "",
+    ): kotlinx.coroutines.Job? {
+        val account = _state.value.currentAccount ?: return null
         val target = targetOf(chatKey)
         val isGroup = target is ChatTarget.Group
         val mdMode = _state.value.markdownMode && !isVideo
@@ -700,7 +722,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             )
         }
 
-        viewModelScope.launch {
+        return viewModelScope.launch {
             try {
                 val ctx = getApplication<Application>()
                 val raw = ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() }
@@ -1049,16 +1071,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         toast("图片上传失败")
                         return@launch
                     }
+                    // 与 sendText 保持一致：文本里的 @全体成员 也视为艾特
+                    val everyoneInText = rawText.contains("@${com.qqbot.client.bot.AtSyntax.EVERYONE_NAME}")
+                    val ev = atEveryone || everyoneInText
+                    var cleanText = rawText
+                    atMembers.forEach { m -> cleanText = cleanText.replace("@${m.nickname}", "") }
+                    cleanText = cleanText.replace("@${com.qqbot.client.bot.AtSyntax.EVERYONE_NAME}", "").trim()
                     val body = buildString {
                         atMembers.forEach { append(com.qqbot.client.bot.AtSyntax.user(it.openId)) }
-                        if (atEveryone) append(com.qqbot.client.bot.AtSyntax.everyone())
-                        if (atMembers.isNotEmpty() || atEveryone) append(' ')
+                        if (ev) append(com.qqbot.client.bot.AtSyntax.everyone())
+                        if (atMembers.isNotEmpty() || ev) append(' ')
                         urls.forEach { (u, s) ->
                             append(MarkdownBuilder.image(u, s?.first ?: 0, s?.second ?: 0))
                             append('\n')
                         }
-                        if (rawText.isNotBlank()) {
-                            append(if (looksLikeMarkdown(rawText)) rawText else MarkdownBuilder.autoWrapMixed(rawText))
+                        if (cleanText.isNotBlank()) {
+                            append(if (looksLikeMarkdown(cleanText)) cleanText else MarkdownBuilder.autoWrapMixed(cleanText))
                         }
                     }.trim()
 

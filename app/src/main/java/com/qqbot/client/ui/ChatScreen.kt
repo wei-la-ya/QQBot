@@ -115,7 +115,7 @@ fun ChatScreen(
     /** 外部要求插入到输入框的文本（长按头像 / 资料卡「提醒TA」） */
     insertText: String? = null,
     onInsertConsumed: () -> Unit = {},
-    /** 由外部持有的待发送附件（相册选完图后挂起，可继续输入文字一起发） */
+    /** 由外部持有的待发送附件（相册勾选后带出，可继续输入文字一起发） */
     attachments: List<android.net.Uri> = emptyList(),
     onAttachmentsChange: (List<android.net.Uri>) -> Unit = {},
     /** 打开相册：由外部统一处理「先收键盘再开面板」的互斥 */
@@ -146,7 +146,6 @@ fun ChatScreen(
     var quote by remember(conversation.chatKey) { mutableStateOf<ChatMessage?>(null) }
     var showPlus by remember { mutableStateOf(false) }
     var menuFor by remember { mutableStateOf<ChatMessage?>(null) }
-    var atEveryone by remember(conversation.chatKey) { mutableStateOf(false) }
     var showMemberPicker by remember { mutableStateOf(false) }
     // 键盘控制：面板与键盘互斥时用来主动收起输入法
     val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
@@ -366,19 +365,8 @@ fun ChatScreen(
             }
         }
 
-        // @全体成员提示
-        if (atEveryone) {
-            Row(
-                Modifier.fillMaxWidth().background(Color.White).padding(horizontal = 12.dp, vertical = 5.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("@全体成员", fontSize = 12.sp, color = QQ.Blue, modifier = Modifier.weight(1f))
-                Text(
-                    "×", fontSize = 16.sp, color = QQ.TextSecondary,
-                    modifier = Modifier.clickable { atEveryone = false }.padding(horizontal = 6.dp),
-                )
-            }
-        }
+        // 与 QQ 一致：@全体成员不再单独占一行状态条，
+        // 而是和其它 @ 一样以文本插入输入框（发送时统一解析）
 
         // ===== 普通 / MD 切换 =====
         ModeSwitchBar(markdownMode, onToggleMarkdown)
@@ -406,17 +394,22 @@ fun ChatScreen(
             },
             onRequestClosePlus = { showPlus = false },
             onSend = {
-                if (draft.isNotBlank() || atEveryone || pendingAttachments.isNotEmpty()) {
-                    val picked = parseAtChips(draft, members).map { chip ->
-                        members.firstOrNull { it.openId == chip.openId }
-                            ?: GroupMember(chip.openId, chip.nickname)
-                    }.distinctBy { it.openId }
+                // 输入框里只要还有内容（文字 / @ / 附件）就可以发
+                if (draft.isNotBlank() || pendingAttachments.isNotEmpty()) {
+                    val picked = parseAtChips(draft, members)
+                        // "ALL" 是 @全体成员的占位，不能当成真实成员
+                        .filter { it.openId != "ALL" }
+                        .map { chip ->
+                            members.firstOrNull { it.openId == chip.openId }
+                                ?: GroupMember(chip.openId, chip.nickname)
+                        }.distinctBy { it.openId }
+                    // @全体成员 与 @用户 一样从文本里识别
+                    val everyOne = draft.contains("@${com.qqbot.client.bot.AtSyntax.EVERYONE_NAME}")
                     // 图文混发：附件与文字一起交给上层发送
-                    onSendWithAttachments(draft.trim(), quote, picked, atEveryone, pendingAttachments)
-                    onAttachmentsChange(emptyList())
+                    onSendWithAttachments(draft.trim(), quote, picked, everyOne, pendingAttachments)
+                    // 发送后由外部清空附件，这里只清本地输入状态
                     draft = ""
                     quote = null
-                    atEveryone = false
                 }
             },
             onPickImage = {
@@ -431,7 +424,14 @@ fun ChatScreen(
             },
             // 相机不涉及面板，直接收起键盘
             onPickCamera = { showPlus = false; keyboard?.hide(); onPickCamera() },
-            onAtEveryone = { atEveryone = true },
+            // 与 QQ 一致：@全体成员 直接以标签插入输入框
+            onAtEveryone = {
+                draft = if (draft.isEmpty() || draft.endsWith(" ") || draft.endsWith("\n")) {
+                    "$draft@全体成员 "
+                } else {
+                    "$draft @全体成员 "
+                }
+            },
             attachments = pendingAttachments,
             onRemoveAttachment = { uri -> onAttachmentsChange(pendingAttachments.filter { it != uri }) },
         )
@@ -448,6 +448,8 @@ fun ChatScreen(
                         onDismiss = onAlbumDismiss,
                         onConfirm = onAlbumConfirm,
                         onDragToChat = onAlbumDragToChat,
+                        initialSelected = attachments,
+                        onSelectionChange = onAttachmentsChange,
                     )
                 }
             } else {
@@ -466,6 +468,8 @@ fun ChatScreen(
                 onDismiss = onAlbumDismiss,
                 onConfirm = onAlbumConfirm,
                 onDragToChat = onAlbumDragToChat,
+                initialSelected = attachments,
+                onSelectionChange = onAttachmentsChange,
             )
         }
     }
