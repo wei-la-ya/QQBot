@@ -12,6 +12,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    # 上传 Release 需要 contents: write（默认 GITHUB_TOKEN 是只读的，不加会 403）
+    permissions:
+      contents: write
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -81,12 +85,21 @@ jobs:
           rm -f release.jks
 
       - name: Collect APK
+        id: apk
         run: |
           mkdir -p dist
+          VERSION=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts | head -n1)
+          CODE=$(grep -oP 'versionCode\s*=\s*\K\d+' app/build.gradle.kts | head -n1)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
           if [ -f QQBot-signed.apk ]; then
-            cp QQBot-signed.apk "dist/QQBot-${{ github.run_number }}.apk"
+            # 固定名 + 带版本名，方便直接用固定链接下载最新版
+            cp QQBot-signed.apk "dist/QQBot.apk"
+            cp QQBot-signed.apk "dist/QQBot-v${VERSION}.apk"
+            echo "signed=true" >> "$GITHUB_OUTPUT"
           else
-            cp app/build/outputs/apk/release/QQBot.apk "dist/QQBot-unsigned-${{ github.run_number }}.apk"
+            cp app/build/outputs/apk/release/QQBot.apk "dist/QQBot-unsigned-${VERSION}.apk"
+            echo "signed=false" >> "$GITHUB_OUTPUT"
           fi
           ls -lh dist
 
@@ -106,9 +119,35 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-      - name: Create Release
+      # ---------- 自动发布到 Releases ----------
+      # 每次推到 main/master，都会更新一个「latest」滚动 Release，
+      # 里面的 QQBot.apk 始终是最新构建；打 v* 标签则额外发正式版本。
+
+      - name: Publish rolling release (latest)
+        if: github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: "QQBot 最新构建 (v${{ steps.apk.outputs.version }})"
+          body: |
+            QQBot 最新自动构建
+
+            - 版本：${{ steps.apk.outputs.version }} (versionCode ${{ steps.apk.outputs.code }})
+            - 提交：${{ github.sha }}
+            - 构建：[${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+            下载 `QQBot.apk` 直接安装（已签名）。
+          files: |
+            dist/QQBot.apk
+            dist/QQBot-v${{ steps.apk.outputs.version }}.apk
+          prerelease: false
+          make_latest: true
+
+      - name: Publish versioned release (tag)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.apk
+          files: |
+            dist/QQBot.apk
+            dist/QQBot-v${{ steps.apk.outputs.version }}.apk
           generate_release_notes: true
