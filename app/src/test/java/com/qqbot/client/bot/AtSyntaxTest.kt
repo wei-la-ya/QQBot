@@ -154,7 +154,7 @@ class ChatMessageParseTest {
     }
 
     @Test
-    fun `纯表情消息仍显示为文字`() {
+    fun `纯表情消息保留表情标签供渲染`() {
         val d = org.json.JSONObject(
             """
             {
@@ -167,7 +167,11 @@ class ChatMessageParseTest {
             """.trimIndent()
         )
         val msg = ChatMessage.fromEvent(QqBotConfig.EV_GROUP_MESSAGE_CREATE, d, "bot")!!
-        assertTrue("没有图片时表情应转成文字", msg.text.contains("[呲牙]"))
+        // 标签要原样保留，UI 才能渲染成表情图（而不是显示 [呲牙] 文字）
+        assertTrue("应保留 faceId 标签", msg.text.contains("<faceType=1,faceId=\"13\""))
+        assertTrue(msg.text.startsWith("笑死了"))
+        // 会话摘要仍应转成可读文字
+        assertEquals("笑死了[呲牙]", ChatMessage.facesToText(msg.text))
     }
 
     private fun b64(s: String) =

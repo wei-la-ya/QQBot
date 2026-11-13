@@ -67,8 +67,8 @@ fun EmojiPanel(
                     modifier = Modifier.fillMaxWidth(),
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(6.dp),
                 ) {
-                    items(QqFaces.all, key = { it.code }) { face ->
-                        FaceCell(face) { onPick(face.name, face.code) }
+                    items(QqFaces.all, key = { it.qsid }) { face ->
+                        FaceCell(face) { onPick(face.name, face.qsid) }
                     }
                 }
             } else {
@@ -134,7 +134,7 @@ private fun FaceCell(face: QqFace, onClick: () -> Unit) {
     ) {
         AsyncImage(
             model = ImageRequest.Builder(LocalContext.current)
-                .data(QqFaces.url(face.code))
+                .data(QqFaces.url(face.emcode))
                 .crossfade(false)
                 .build(),
             contentDescription = face.name,

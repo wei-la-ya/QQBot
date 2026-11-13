@@ -668,9 +668,8 @@ class StorageManager(context: Context) {
         msg.segments.any { it.kind == MessageSegment.Kind.VIDEO } -> "[视频]"
         msg.segments.any { it.kind == MessageSegment.Kind.VOICE } -> "[语音]"
         msg.text.isNotEmpty() -> {
-            // 摘要里去掉 @ 提及与多余空白，与 QQ 会话列表一致（不显示 @xxx）
-            // 只删「行首或空格后的 @xxx」，避免误伤邮箱
-            val cleaned = msg.text
+            // 摘要里去掉 @ 提及与多余空白；表情标签转成 [名称]，避免列表出现一长串 <faceType=...>
+            val cleaned = ChatMessage.facesToText(msg.text)
                 .replace(Regex("(^|\\s)@[^\\s@]{1,32}"), " ")
                 .replace(Regex("\\s+"), " ")
                 .trim()

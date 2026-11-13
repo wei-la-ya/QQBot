@@ -162,25 +162,19 @@ data class ChatMessage(
         }
 
         /**
-         * 表情标签转文字、@ 标签换成昵称、去掉图片 URL 尖括号。
+         * 表情标签保留原样、@ 标签换成昵称、去掉图片 URL 尖括号。
+         *
+         * 表情**不再转成 `[呲牙]` 文字**：保留 `<faceType=...>` 原文，
+         * 交给 UI 的 TextWithFaces 解析成 QQ 表情图，这样别人发的表情也能正常显示。
+         *
          * @param dropFaces 消息已带图片附件时传 true：此时 faceType 标签就是那张表情包本身，
-         *                  再转成文字会出现「图片下面多一行 [表情]」的重复。
+         *                  再渲染一次会出现重复。
          */
         fun sanitize(content: String, mentions: List<Mention> = emptyList(), dropFaces: Boolean = false): String {
             if (content.isEmpty()) return ""
             var s = content
-            s = if (dropFaces) {
-                FACE_PATTERN.replace(s, "")
-            } else {
-                FACE_PATTERN.replace(s) { m ->
-                    val ext = m.groupValues[2]
-                    val name = try {
-                        JSONObject(String(android.util.Base64.decode(ext, android.util.Base64.DEFAULT))).optString("text")
-                    } catch (_: Exception) {
-                        ""
-                    }
-                    if (name.isNotEmpty()) "[$name]" else "[表情]"
-                }
+            if (dropFaces) {
+                s = FACE_PATTERN.replace(s, "")
             }
             s = AT_PATTERN.replace(s) { m ->
                 val id = m.groupValues[1]
@@ -188,9 +182,29 @@ data class ChatMessage(
                 if (hit != null) "@${hit.name}" else "@"
             }
             s = IMG_TAG.replace(s, "")
-            // 规范化空白：去掉丢弃标签后留下的多余空格/空行
-            s = s.replace(Regex("[ \\t]{2,}"), " ").replace(Regex("\\n{3,}"), "\n\n")
+            if (dropFaces) {
+                // 只有丢弃标签时才需要收敛空白；保留表情时原样维持排版
+                s = s.replace(Regex("[ \\t]{2,}"), " ").replace(Regex("\\n{3,}"), "\n\n")
+            }
             return s.trim()
+        }
+
+        /**
+         * 把消息里的表情标签转成可读文字（会话摘要等纯文本场景用）。
+         * 格式 `<faceType=...,faceId="13",ext="...">` → `[呲牙]`
+         */
+        fun facesToText(text: String): String {
+            if (!text.contains("<faceType")) return text
+            return FACE_PATTERN.replace(text) { m ->
+                val ext = m.groupValues[2]
+                val name = try {
+                    JSONObject(String(android.util.Base64.decode(ext, android.util.Base64.DEFAULT)))
+                        .optString("text")
+                } catch (_: Exception) {
+                    ""
+                }
+                if (name.isNotEmpty()) "[$name]" else "[表情]"
+            }
         }
 
         private fun extractQuote(d: JSONObject, elements: org.json.JSONArray?): QuoteRef? {

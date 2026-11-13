@@ -68,7 +68,8 @@ fun TextWithFaces(
                 }
                 is FacePart.Face -> AsyncImage(
                     model = ImageRequest.Builder(LocalContext.current)
-                        .data(QqFaces.url(part.code))
+                        // faceId 是 QSid，图床文件名用的是 EMCode，需要转换
+                        .data(QqFaces.url(QqFaces.emcodeOf(part.code)))
                         .crossfade(false)
                         .build(),
                     contentDescription = part.name,
@@ -95,9 +96,12 @@ internal fun splitFaces(text: String): List<FacePart> {
     var last = 0
     FACE_TAG.findAll(text).forEach { m ->
         if (m.range.first > last) parts.add(FacePart.Text(text.substring(last, m.range.first)))
-        val code = m.groupValues[1].toIntOrNull()
-        val name = decodeFaceName(m.groupValues[2])
-        if (code != null) parts.add(FacePart.Face(code, name))
+        val qsid = m.groupValues[1].toIntOrNull()
+        // 名称优先取 ext 里的 text，没有就按 QSid 反查
+        val name = decodeFaceName(m.groupValues[2]).ifEmpty {
+            qsid?.let { QqFaces.byFaceId(it)?.name } ?: ""
+        }
+        if (qsid != null) parts.add(FacePart.Face(qsid, name))
         last = m.range.last + 1
     }
     if (last < text.length) parts.add(FacePart.Text(text.substring(last)))
