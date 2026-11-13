@@ -26,11 +26,22 @@
 
 ### 下载 CI 构建的 APK
 
-仓库已配置 GitHub Actions，推送到 `main` 后自动跑测试并构建签名 APK：
+仓库已配置 GitHub Actions，推送到 `main` 后自动跑测试 → 构建签名 APK → **发布到 Releases**。
 
-1. 打开仓库 **Actions → Build APK → 最新一次运行**
-2. 页面底部 **Artifacts → QQBot-apk** 下载 zip，解压得到 `QQBot-<n>.apk`
-3. 直接安装（已用仓库 secrets 里的密钥签名，可覆盖旧版）
+**直接下载最新版（固定链接，永远是最新构建）：**
+
+```
+https://github.com/wei-la-ya/QQBot/releases/latest/download/QQBot.apk
+```
+
+也可以打开 [Releases](https://github.com/wei-la-ya/QQBot/releases) 页面手动下载：
+
+| 标签 | 说明 |
+|---|---|
+| `latest` | 滚动 Release，每次推送 `main` 都更新，内含 `QQBot.apk` 与 `QQBot-v<版本>.apk` |
+| `v*` | 手动打 tag（如 `git tag v1.5 && git push --tags`）发布正式版本 |
+
+APK 已用仓库 secrets 里的密钥签名，可直接覆盖安装。CI 运行记录在 Actions → Build APK，同时保留 30 天 Artifact。
 
 ### 云端自动构建（GitHub Actions）
 
