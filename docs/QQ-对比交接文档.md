@@ -476,6 +476,34 @@ cd D:\code\QQBotQQ
 - 固定下载链接：`https://github.com/wei-la-ya/QQBot/releases/latest/download/QQBot.apk`
 - CI secrets：`KEYSTORE_BASE64` / `KEYSTORE_PASSWORD` / `KEY_PASSWORD` / `KEY_ALIAS`
 
+### 6.1 签名规范（唯一可信来源）
+
+发布密钥固定，**换密钥 = 所有已安装用户无法升级**，所以指纹写死在代码里并强校验：
+
+```
+CN=QQBotQQ, OU=Local, O=Private, L=Local, ST=Local, C=CN
+SHA-256 = a695b1e8f15e40b6e5219d6dd9d41c68985b7907cfd669907cd878cc9685e005
+```
+
+| 环节 | 位置 | 说明 |
+|---|---|---|
+| 指纹常量 | `app/build.gradle.kts` `expectedCertSha256` | 公开信息，可入库 |
+| 本地签名 | `local.properties` 的 `QQBOT_STORE_FILE/PASSWORD`、`QQBOT_KEY_ALIAS/PASSWORD` | 已 gitignore；配好后 `assembleRelease` 自动签名 |
+| 本地校验 | `./gradlew verifyReleaseSignature` | 未签名 / 指纹不符 → 直接失败 |
+| CI 签名 | workflow `Sign release APK`（secrets 解码成 release.jks 后 apksigner 签） | 密钥只在 secrets |
+| CI 校验 | workflow `Verify APK signature` | 指纹不符 `exit 1`，坏包不会进 Releases |
+
+已实测验证（本轮）：
+- 用临时密钥构建 → 产物确实被自动签名（证明 `signingConfig` 接线生效）
+- 用临时密钥跑 `verifyReleaseSignature` → **BUILD FAILED**，正确拦截指纹不符
+- 无凭据构建 → 产物未签名，`verifyReleaseSignature` 报「未签名」并给出配置指引
+- 清理临时密钥后重新构建，根目录 `QQBot.apk` 未被污染（仍为 `a695b1e8…`）
+
+历史事实（已核对，供后续参考）：
+- 用户手机上曾安装的 **v1.1（versionCode 2）** 证书 SHA-256 也是 `a695b1e8…5e005`，
+  因此 v1.1 → v1.7 可**直接覆盖安装**，无需卸载
+- 反例：`assembleDebug` 产出的是 Android 公共调试证书 `839b335af8c8…1c55`，**不可对外分发**
+
 ---
 
 ## 七、v1.7 变更记录（本轮复核后的落地）

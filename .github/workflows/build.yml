@@ -84,6 +84,29 @@ jobs:
             app/build/outputs/apk/release/QQBot.apk
           rm -f release.jks
 
+      # 关键防线：签名证书必须与发布密钥一致，否则已安装用户无法覆盖升级。
+      # 指纹是公开信息，与 app/build.gradle.kts 里的 expectedCertSha256 保持一致。
+      - name: Verify APK signature
+        if: steps.sign.outputs.available == 'true'
+        run: |
+          set -e
+          BUILD_TOOLS=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n1)
+          EXPECTED="a695b1e8f15e40b6e5219d6dd9d41c68985b7907cfd669907cd878cc9685e005"
+          ACTUAL=$("$BUILD_TOOLS/apksigner" verify --print-certs QQBot-signed.apk \
+            | grep -oP 'certificate SHA-256 digest:\s*\K[0-9a-fA-F]+' | head -n1)
+          echo "expected = $EXPECTED"
+          echo "actual   = $ACTUAL"
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::APK 签名证书与发布密钥不一致，会导致已安装用户无法覆盖升级。请检查 KEYSTORE_BASE64 是否仍是那把发布密钥。"
+            exit 1
+          fi
+          echo "✅ 签名校验通过：$ACTUAL"
+
+      - name: Warn if unsigned
+        if: steps.sign.outputs.available != 'true'
+        run: |
+          echo "::warning::未配置 KEYSTORE_BASE64，产出的是未签名 APK，无法直接安装，也不会发布到 Releases。"
+
       - name: Collect APK
         id: apk
         run: |

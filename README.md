@@ -64,6 +64,63 @@ APK 已用仓库 secrets 里的密钥签名，可直接覆盖安装。CI 运行�
 
 ---
 
+## 一之补充、签名规范（务必遵守）
+
+APK 的签名证书一旦变化，**已安装用户就无法覆盖升级**（只能卸载重装，数据全丢）。
+所以本项目的发布密钥固定为下面这一张，CI 与本地构建都必须用它：
+
+```
+CN=QQBotQQ, OU=Local, O=Private, L=Local, ST=Local, C=CN
+SHA-256 = a695b1e8f15e40b6e5219d6dd9d41c68985b7907cfd669907cd878cc9685e005
+```
+
+### 密钥与口令放在哪
+
+| 位置 | 内容 | 是否入库 |
+|---|---|---|
+| `keystore.jks`（项目根目录） | 密钥库（PKCS12 格式） | ❌ 已 gitignore |
+| GitHub Actions secrets | `KEYSTORE_BASE64` / `KEYSTORE_PASSWORD` / `KEY_PASSWORD` / `KEY_ALIAS` | ❌ 只存在 GitHub |
+| `local.properties` | 本地构建用的签名口令 | ❌ 已 gitignore |
+| `app/build.gradle.kts` | **仅**证书指纹（公开信息）+ 签名配置读取逻辑 | ✅ 入库 |
+| `.github/workflows/build.yml` | 同样的指纹校验 | ✅ 入库 |
+
+指纹不是秘密——它存在于每个已签名 APK 里；口令才是秘密，从不入库。
+
+### 本地构建出「可安装」的包
+
+默认 `assembleRelease` 产出**未签名**包（装不上）。要让本地包也能装，在 `local.properties` 里加四行：
+
+```properties
+QQBOT_STORE_FILE=../keystore.jks
+QQBOT_STORE_PASSWORD=你的密钥库口令
+QQBOT_KEY_ALIAS=你的别名
+QQBOT_KEY_PASSWORD=你的私钥口令
+```
+
+（也可以用同名环境变量 `QQBOT_STORE_FILE` 等代替，CI 走的就是环境变量。）
+
+配好后再构建，Gradle 会自动签名，和 CI 的包**同证书**。
+
+### 校验签名（两道防线）
+
+```bash
+# 本地：构建并校验指纹，证书不对直接失败
+./gradlew verifyReleaseSignature
+```
+
+CI 在 `Sign release APK` 之后有 `Verify APK signature` 步骤，
+指纹不符会 `exit 1` 让整个构建失败，不会把坏包发到 Releases。
+
+### 常见踩坑
+
+- **本地 `assembleRelease` 的包装不上** → 没配签名凭据，产物是未签名包；按上面加 4 行配置。
+- **装包报「应用未安装 / 签名冲突」** → 手机上那个包是别的密钥签的（例如 Android 调试证书
+  `839b335a…`）。用 `./gradlew verifyReleaseSignature` 看实际指纹；调试证书签的必须先卸载。
+- **换密钥的后果** → 所有已安装用户都无法升级。除非决定彻底弃用旧包，否则不要换。
+- **不要用 `assembleDebug` 的包分发给别人**：它用 Android 公共调试密钥签名，与发布密钥完全不同。
+
+---
+
 ## 二、功能清单
 
 ### 消息收发
