@@ -474,6 +474,40 @@ c = true;   // 重置 i() 返回的拖动开关
 仍待解决：**群内引用消息不显示**——需要抓一条真实引用消息的 payload 才能确定
 `message_scene.ext` / `msg_elements[].msg_idx` 的实际结构，不凭猜实现。
 
+
+### 3.6 引用消息与合并转发（2026-11-14 抓包实测）
+
+**引用消息的真实结构**（`message_type = 103`）：
+
+```json
+"message_scene": { "ext": [
+    "ref_msg_idx=REFIDX_tSeXi/…",     ← 被引用那条
+    "msg_idx=REFIDX_N9Bqb0…",         ← 本条自己
+    "auth_token=aE787uS5…"
+]},
+"msg_elements": [ {                  ← 被引用消息的内容在这里
+    "msg_idx": "REFIDX_tSeXi/…",     ← 与 ref_msg_idx 相同
+    "content": "",
+    "attachments": [ { "content_type": "image/jpeg", "url": "…", "width":864, "height":1920 } ]
+}],
+"parallel_message": { "msg_nodes": [ { "content": "[图片]", "message_type": 7 } ] }
+```
+
+**引用一直不显示的根因**：原正则 `[?&](?:ref_)?msg_idx=([^&]+)` 要求 id 前面有 `?` 或 `&`，
+但实际是 `ext` 数组里的裸字符串 `ref_msg_idx=REFIDX_…`，**永远匹配不到**。
+
+**踩坑记录（差点造成回归）**：修正则后我加了“找不到 `ref_` 就退回普通 `msg_idx`”的兜底，
+验证时发现**每条普通消息的 ext 里都带自己的 `msg_idx`**，兜底会让所有消息都挂上引用条。
+已删除该兜底：**只有出现 `ref_msg_idx=` 才认为是引用**。
+用抓到的 21 条群消息回归验证：仅 2 条是真引用，且都成功匹配到 `msg_elements`。
+
+**合并转发**：内联消息在 `parallel_message.msg_nodes`（每条含 `content` / `message_type`）。
+UI 按 QQ 形态实现为**卡片**：标题「聊天记录」+ 最多 4 行预览 + 「查看N条消息」，
+点开是内联消息列表。判定阈值 `msg_nodes >= 2` 才算转发（引用消息只带 1 个 node）。
+
+> ⚠️ 截至本次提交**尚未抓到真实的合并转发样本**，卡片渲染基于上面的结构推断，
+> 待拿到 `message_type` 与 node 结构的实例后复核。
+
 ## 四、待做的事（逐层对比清单）
 
 对每一层，打开对应 QQ 类 → 找到真实行为 → 打开本项目实现 → 比对差异 → 修正 → 记录结论。

@@ -32,10 +32,19 @@ data class Mention(
 )
 
 /** 引用信息 */
+/** 合并转发卡片里的单条内联消息（来自 parallel_message.msg_nodes） */
+data class ForwardNode(
+    val content: String,
+    val messageType: Int,
+    val imageUrl: String = "",
+)
+
 data class QuoteRef(
     val messageId: String,
     val authorName: String,
     val text: String,
+    /** 被引用的消息里带的图片（实测引用图片消息时 msg_elements 会带 attachments） */
+    val imageUrls: List<String> = emptyList(),
 )
 
 /**
@@ -63,6 +72,8 @@ data class ChatMessage(
     val senderNickname: String = "",
     /** QQ 昵称（author.username），群昵称之外的真实昵称 */
     val senderQqNickname: String = "",
+    /** 合并转发的内联消息；非空时 UI 渲染成「卡片」而不是普通气泡 */
+    val forwardNodes: List<ForwardNode> = emptyList(),
     /** 本地自增序号，用于同一毫秒消息的稳定排序与分页游标 */
     val seq: Long = 0,
 ) {
@@ -100,7 +111,9 @@ data class ChatMessage(
                 Regex("(?m)^---+\\s*$").containsMatchIn(s)
         }
         // 参考实现用 msg_idx（REFIDX 的查询参数）；同时兼容部分网关返回的 ref_msg_idx
-        private val MSG_IDX_PATTERN = Regex("[?&](?:ref_)?msg_idx=([^&]+)")
+        // 实测：message_scene.ext 里的形态是裸的 "ref_msg_idx=REFIDX_..." 或 "msg_idx=..."，
+        // 前面并没有 ? 或 &，原来的 [?&] 前缀导致永远匹配不到（引用一直不显示）。
+        private val MSG_IDX_PATTERN = Regex("(?:^|[?&])(?:ref_)?msg_idx=([^&]+)")
 
         /**
          * 从 WS 事件 d 字段解析消息。
@@ -184,6 +197,29 @@ data class ChatMessage(
             // 4. 引用
             val quote = extractQuote(d, elements)
 
+            // 合并转发：内联消息都在 parallel_message.msg_nodes 里。
+            // 单条且就是本条引用摘要时不要误判成转发（引用消息也会带 1 个 node）。
+            val forwardNodes = mutableListOf<ForwardNode>()
+            d.optJSONObject("parallel_message")?.optJSONArray("msg_nodes")?.let { nodes ->
+                for (i in 0 until nodes.length()) {
+                    val n = nodes.optJSONObject(i) ?: continue
+                    val c = n.optString("content")
+                    val mt = n.optInt("message_type", 0)
+                    var img = ""
+                    n.optJSONArray("attachments")?.let { arr ->
+                        for (k in 0 until arr.length()) {
+                            val at = arr.optJSONObject(k) ?: continue
+                            if (!at.optString("content_type").startsWith("image/")) continue
+                            img = android.text.Html.fromHtml(
+                                at.optString("url"), android.text.Html.FROM_HTML_MODE_LEGACY
+                            ).toString()
+                            if (img.isNotEmpty()) break
+                        }
+                    }
+                    if (c.isNotEmpty() || img.isNotEmpty()) forwardNodes.add(ForwardNode(c, mt, img))
+                }
+            }
+
             val ts = parseTimestamp(d.optString("timestamp")) ?: System.currentTimeMillis()
             val isSelf = !botOpenId.isNullOrEmpty() && memberOpenId == botOpenId
 
@@ -196,6 +232,7 @@ data class ChatMessage(
                 senderName = nickname.ifEmpty { userName }.ifEmpty { memberOpenId.takeLast(8) },
                 senderNickname = nickname,
                 senderQqNickname = userName,
+                forwardNodes = forwardNodes,
                 senderAvatar = avatar,
                 text = text,
                 segments = segments,
@@ -264,9 +301,12 @@ data class ChatMessage(
         private fun extractQuote(d: JSONObject, elements: org.json.JSONArray?): QuoteRef? {
             val scene = d.optJSONObject("message_scene") ?: return null
             val ext = scene.optJSONArray("ext") ?: return null
+
+            // ext 里通常同时有 ref_msg_idx（被引用那条）和 msg_idx（本条），优先取 ref_
             var refId = ""
             for (i in 0 until ext.length()) {
                 val item = ext.optString(i)
+                if (!item.contains("ref_msg_idx=")) continue
                 val m = MSG_IDX_PATTERN.find(item) ?: continue
                 refId = try {
                     URLDecoder.decode(m.groupValues[1], "UTF-8")
@@ -275,19 +315,54 @@ data class ChatMessage(
                 }
                 break
             }
-            if (refId.isEmpty() || elements == null) return null
-            for (i in 0 until elements.length()) {
-                val el = elements.optJSONObject(i) ?: continue
-                if (el.optString("msg_idx") == refId) {
-                    // author 可能缺失：先取值再回退，避免空安全调用后无法再次引用
+            if (refId.isEmpty()) return null
+
+            // 被引用消息的内容在同一条事件的 msg_elements 里，按 msg_idx 对齐
+            var name = ""
+            val textSb = StringBuilder()
+            val images = mutableListOf<String>()
+            if (elements != null) {
+                for (i in 0 until elements.length()) {
+                    val el = elements.optJSONObject(i) ?: continue
+                    if (el.optString("msg_idx") != refId) continue
                     val a = el.optJSONObject("author")
-                    val rawName = if (a != null) a.optString("username") else ""
-                    val name = if (rawName.isNotEmpty()) rawName else "引用消息"
-                    val txt = sanitize(el.optString("content")).replace(Regex("\\s+"), " ")
-                    return QuoteRef(refId, name, txt)
+                    if (a != null) name = a.optString("username").ifEmpty { a.optString("member_nickname") }
+                    textSb.append(sanitize(el.optString("content")))
+                    el.optJSONArray("attachments")?.let { arr ->
+                        for (k in 0 until arr.length()) {
+                            val at = arr.optJSONObject(k) ?: continue
+                            val ct = at.optString("content_type")
+                            if (!ct.startsWith("image/")) continue
+                            val u = android.text.Html.fromHtml(
+                                at.optString("url"), android.text.Html.FROM_HTML_MODE_LEGACY
+                            ).toString()
+                            if (u.isNotEmpty()) images.add(u)
+                        }
+                    }
                 }
             }
-            return null
+
+            // parallel_message.msg_nodes 是被引用内容的摘要（如 "[图片]"），
+            // 当 msg_elements 里拿不到正文时用它，至少能显示「引用了什么」
+            if (textSb.isBlank()) {
+                val nodes = d.optJSONObject("parallel_message")?.optJSONArray("msg_nodes")
+                if (nodes != null) {
+                    val parts = mutableListOf<String>()
+                    for (i in 0 until nodes.length()) {
+                        val n = nodes.optJSONObject(i) ?: continue
+                        val c = n.optString("content")
+                        if (c.isNotEmpty()) parts.add(c)
+                    }
+                    if (parts.isNotEmpty()) textSb.append(parts.joinToString(" "))
+                }
+            }
+
+            val txt = textSb.toString().replace(Regex("\\s+"), " ").trim()
+            if (txt.isEmpty() && images.isEmpty()) {
+                // 至少给个占位，别让引用整块消失
+                return QuoteRef(refId, name.ifEmpty { "引用消息" }, "")
+            }
+            return QuoteRef(refId, name.ifEmpty { "引用消息" }, txt, images)
         }
 
         private fun parseTimestamp(v: String): Long? {
