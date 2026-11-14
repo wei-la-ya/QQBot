@@ -21,7 +21,7 @@
 
 - 应用名：**QQBot**
 - 包名：**`com.qqbot.client`**，minSdk 24，targetSdk 34
-- 版本：`versionCode 3` / `versionName 1.2`
+- 版本：`versionCode 8` / `versionName 1.7`
 - `local.properties` 由本地生成（指向自己的 SDK 路径），**不要提交**
 
 ### 下载 CI 构建的 APK
