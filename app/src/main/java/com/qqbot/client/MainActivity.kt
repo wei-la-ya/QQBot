@@ -227,6 +227,8 @@ private fun QQApp(vm: MainViewModel = viewModel()) {
                 },
                 onPickImage = { openAlbum(false) },
                 onPickVideo = { openAlbum(true) },
+                // 之前漏了这个回调，ChatScreen 里点「图片」走的是 onOpenAlbum 的默认空实现
+                onOpenAlbum = { video -> openAlbum(video) },
                 onPickCamera = {
                     // 调系统相机拍照，拍完挂成待发送附件
                     runCatching {
@@ -278,6 +280,7 @@ private fun QQApp(vm: MainViewModel = viewModel()) {
                 onAlbumPreview = { uri -> viewerImage = uri.toString() },
                 onAlbumPermission = { openAlbum(albumVideoMode) },
                 onAlbumToast = { vm.toast(it) },
+                onToast = { vm.toast(it) },
                 // 从相册里滑出去 → 立即发送这一张（QQ PhotoPanelVM 的 i.h → sendSingleMediaInfo）
                 // 注意：QQ 滑出发送**不关闭面板**，只发这一张并刷新列表（h.m 里仅 notifyDataSetChanged）
                 onAlbumDragToChat = { uri ->

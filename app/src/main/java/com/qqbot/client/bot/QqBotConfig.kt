@@ -55,15 +55,17 @@ object QqBotConfig {
     const val EV_GROUP_MEMBER_REMOVE = "GROUP_MEMBER_REMOVE"
 
     /**
-     * 用户头像：QQ appid + 成员 openid，尺寸 100。
-     * 例：https://q.qlogo.cn/qqapp/102056888/8F3A.../100
-     */
-    /**
-     * 用户头像。
+     * 头像兜底地址（**只在事件里没下发 author.avatar 时才用**）。
      *
-     * 实测结论：`q.qlogo.cn/qqapp/{appid}/{openid}/100` 对**机器人 openid 无效**，
-     * 任何参数都返回同一张 QQ 默认企鹅头像。也就是说机器人拿不到成员真实头像，
-     * 因此这里返回空字符串，由 UI 统一退化成「昵称首字 + 稳定配色」。
+     * 实测（2026-11 抓包）：群消息/私聊消息的 author.avatar 基本都会下发，形如
+     * `https://thirdqq.qlogo.cn/bqqthird?key=...&kti=...&s=640`，UI 应优先使用它；
+     * 但并非每条都有，所以仍需要这个拼接接口兜底。
+     *
+     * 注意：该接口对不存在的 openid 会返回同一张默认图（实测 4208 字节），
+     * 因此不能仅凭它判断是否真的有头像。
      */
-    fun memberAvatar(appId: String, openId: String, size: Int = 100): String = ""
+    fun memberAvatar(appId: String, openId: String, size: Int = 100): String {
+        if (appId.isEmpty() || openId.isEmpty()) return ""
+        return "https://q.qlogo.cn/qqapp/$appId/$openId/$size"
+    }
 }

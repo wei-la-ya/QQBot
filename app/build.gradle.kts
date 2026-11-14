@@ -1,4 +1,4 @@
-import java.util.Properties
+﻿import java.util.Properties
 
 plugins {
     id("com.android.application")
@@ -6,26 +6,21 @@ plugins {
 }
 
 // ============================================================================
-// 签名：唯一可信来源（防止用错密钥打出「无法覆盖安装」的包）
+// 绛惧悕锛氬敮涓€鍙俊鏉ユ簮锛堥槻姝㈢敤閿欏瘑閽ユ墦鍑恒€屾棤娉曡鐩栧畨瑁呫€嶇殑鍖咃級
 // ----------------------------------------------------------------------------
-// 本仓库所有对外分发的 APK 必须由同一把密钥签名，否则已安装用户无法覆盖升级。
-// 这把密钥的证书指纹固定在下面，CI 与本地构建都会校验：
+// 鏈粨搴撴墍鏈夊澶栧垎鍙戠殑 APK 蹇呴』鐢卞悓涓€鎶婂瘑閽ョ鍚嶏紝鍚﹀垯宸插畨瑁呯敤鎴锋棤娉曡鐩栧崌绾с€?// 杩欐妸瀵嗛挜鐨勮瘉涔︽寚绾瑰浐瀹氬湪涓嬮潰锛孋I 涓庢湰鍦版瀯寤洪兘浼氭牎楠岋細
 //
 //   CN=QQBotQQ, OU=Local, O=Private, L=Local, ST=Local, C=CN
 //   SHA-256: a695b1e8f15e40b6e5219d6dd9d41c68985b7907cfd669907cd878cc9685e005
 //
-// 指纹是公开信息（每个已签名的 APK 里都有），放进仓库没有问题；
-// 密钥文件与口令是机密，只存在于：
-//   - CI：GitHub Actions secrets（KEYSTORE_BASE64 / KEYSTORE_PASSWORD / KEY_PASSWORD / KEY_ALIAS）
-//   - 本地：keystore.jks（已 gitignore） + local.properties 里的口令（已 gitignore）
-//
-// 本地想产出可安装的 release 包，在 local.properties 里加四行即可：
-//   QQBOT_STORE_FILE=../keystore.jks
+// 鎸囩汗鏄叕寮€淇℃伅锛堟瘡涓凡绛惧悕鐨?APK 閲岄兘鏈夛級锛屾斁杩涗粨搴撴病鏈夐棶棰橈紱
+// 瀵嗛挜鏂囦欢涓庡彛浠ゆ槸鏈哄瘑锛屽彧瀛樺湪浜庯細
+//   - CI锛欸itHub Actions secrets锛圞EYSTORE_BASE64 / KEYSTORE_PASSWORD / KEY_PASSWORD / KEY_ALIAS锛?//   - 鏈湴锛歬eystore.jks锛堝凡 gitignore锛?+ local.properties 閲岀殑鍙ｄ护锛堝凡 gitignore锛?//
+// 鏈湴鎯充骇鍑哄彲瀹夎鐨?release 鍖咃紝鍦?local.properties 閲屽姞鍥涜鍗冲彲锛?//   QQBOT_STORE_FILE=../keystore.jks
 //   QQBOT_STORE_PASSWORD=***
 //   QQBOT_KEY_ALIAS=***
 //   QQBOT_KEY_PASSWORD=***
-// 也可以用同名环境变量代替（CI 就是这么传的）。
-// ============================================================================
+// 涔熷彲浠ョ敤鍚屽悕鐜鍙橀噺浠ｆ浛锛圕I 灏辨槸杩欎箞浼犵殑锛夈€?// ============================================================================
 
 val expectedCertSha256 = "a695b1e8f15e40b6e5219d6dd9d41c68985b7907cfd669907cd878cc9685e005"
 
@@ -34,11 +29,11 @@ val localProps = Properties().apply {
     if (f.exists()) f.inputStream().use { load(it) }
 }
 
-/** 取签名配置：环境变量优先于 local.properties */
+/** 鍙栫鍚嶉厤缃細鐜鍙橀噺浼樺厛浜?local.properties */
 fun secret(key: String): String? =
     (System.getenv(key) ?: localProps.getProperty(key))?.trim()?.takeIf { it.isNotEmpty() }
 
-/** storeFile 允许写相对路径，相对**根目录**解析 */
+/** storeFile 鍏佽鍐欑浉瀵硅矾寰勶紝鐩稿**鏍圭洰褰?*瑙ｆ瀽 */
 fun resolveStoreFile(path: String): File {
     val f = File(path)
     return if (f.isAbsolute) f else rootProject.file(path)
@@ -57,10 +52,10 @@ val signingAvailable = storeFileValue != null &&
 
 if (!signingAvailable) {
     logger.lifecycle(
-        "[签名] 未配置签名凭据 → release 产物将是**未签名** APK，无法安装。\n" +
-        "        本地构建请在 local.properties 配置 QQBOT_STORE_FILE / QQBOT_STORE_PASSWORD /\n" +
-        "        QQBOT_KEY_ALIAS / QQBOT_KEY_PASSWORD（见文件顶部注释）。\n" +
-        "        CI 由 secrets 注入同样的四个值。"
+        "[绛惧悕] 鏈厤缃鍚嶅嚟鎹?鈫?release 浜х墿灏嗘槸**鏈鍚?* APK锛屾棤娉曞畨瑁呫€俓n" +
+        "        鏈湴鏋勫缓璇峰湪 local.properties 閰嶇疆 QQBOT_STORE_FILE / QQBOT_STORE_PASSWORD /\n" +
+        "        QQBOT_KEY_ALIAS / QQBOT_KEY_PASSWORD锛堣鏂囦欢椤堕儴娉ㄩ噴锛夈€俓n" +
+        "        CI 鐢?secrets 娉ㄥ叆鍚屾牱鐨勫洓涓€笺€?
     )
 }
 
@@ -72,8 +67,8 @@ android {
         applicationId = "com.qqbot.client"
         minSdk = 24
         targetSdk = 34
-        versionCode = 8
-        versionName = "1.7"
+        versionCode = 9
+        versionName = "1.8"
     }
 
     val releaseSigning = if (signingAvailable) {
@@ -82,7 +77,7 @@ android {
             storePassword = storePasswordValue
             keyAlias = keyAliasValue
             keyPassword = keyPasswordValue
-            // v2/v3 都开，保证 Android 7+ 到最新系统都能装
+            // v2/v3 閮藉紑锛屼繚璇?Android 7+ 鍒版渶鏂扮郴缁熼兘鑳借
             enableV1Signing = true
             enableV2Signing = true
             enableV3Signing = true
@@ -94,13 +89,11 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            // 没有凭据时不指定签名 → 产出未签名包（CI 会在构建后用 apksigner 补签）
-            if (releaseSigning != null) signingConfig = releaseSigning
+            // 娌℃湁鍑嵁鏃朵笉鎸囧畾绛惧悕 鈫?浜у嚭鏈鍚嶅寘锛圕I 浼氬湪鏋勫缓鍚庣敤 apksigner 琛ョ锛?            if (releaseSigning != null) signingConfig = releaseSigning
         }
     }
 
-    // 产物统一命名为 QQBot.apk / QQBot-debug.apk，不再出现 app-release 等字眼
-    applicationVariants.all {
+    // 浜х墿缁熶竴鍛藉悕涓?QQBot.apk / QQBot-debug.apk锛屼笉鍐嶅嚭鐜?app-release 绛夊瓧鐪?    applicationVariants.all {
         val variantName = name
         outputs.all {
             (this as com.android.build.gradle.internal.api.BaseVariantOutputImpl).outputFileName =
@@ -135,36 +128,32 @@ android {
 }
 
 /**
- * 校验 release APK 的签名证书指纹。
- *
- * 用法：`./gradlew verifyReleaseSignature`（会先构建 release）
- * 任何一环签名不对（未签名 / 换了密钥 / 误用 debug 密钥）都会在这里直接失败，
- * 而不是等用户装到手机上才发现「应用未安装」。
- */
+ * 鏍￠獙 release APK 鐨勭鍚嶈瘉涔︽寚绾广€? *
+ * 鐢ㄦ硶锛歚./gradlew verifyReleaseSignature`锛堜細鍏堟瀯寤?release锛? * 浠讳綍涓€鐜鍚嶄笉瀵癸紙鏈鍚?/ 鎹簡瀵嗛挜 / 璇敤 debug 瀵嗛挜锛夐兘浼氬湪杩欓噷鐩存帴澶辫触锛? * 鑰屼笉鏄瓑鐢ㄦ埛瑁呭埌鎵嬫満涓婃墠鍙戠幇銆屽簲鐢ㄦ湭瀹夎銆嶃€? */
 tasks.register("verifyReleaseSignature") {
     group = "verification"
-    description = "校验 release APK 的签名证书是否为发布密钥"
+    description = "鏍￠獙 release APK 鐨勭鍚嶈瘉涔︽槸鍚︿负鍙戝竷瀵嗛挜"
     dependsOn("assembleRelease")
 
     doLast {
         val apk = file("build/outputs/apk/release/QQBot.apk")
-        if (!apk.exists()) throw GradleException("找不到 APK：$apk")
+        if (!apk.exists()) throw GradleException("鎵句笉鍒?APK锛?apk")
 
         val sdkDir = sequenceOf(
             localProps.getProperty("sdk.dir"),
             System.getenv("ANDROID_HOME"),
             System.getenv("ANDROID_SDK_ROOT"),
         ).filterNotNull().firstOrNull { it.isNotBlank() }
-            ?: throw GradleException("找不到 Android SDK 路径（sdk.dir / ANDROID_HOME）")
+            ?: throw GradleException("鎵句笉鍒?Android SDK 璺緞锛坰dk.dir / ANDROID_HOME锛?)
 
         val isWindows = System.getProperty("os.name").lowercase().contains("win")
         val apksignerName = if (isWindows) "apksigner.bat" else "apksigner"
         val buildTools = File(sdkDir, "build-tools")
             .listFiles { f -> f.isDirectory }
             ?.maxByOrNull { it.name }
-            ?: throw GradleException("找不到 build-tools 目录：$sdkDir/build-tools")
+            ?: throw GradleException("鎵句笉鍒?build-tools 鐩綍锛?sdkDir/build-tools")
         val apksigner = File(buildTools, apksignerName)
-        if (!apksigner.exists()) throw GradleException("找不到 apksigner：$apksigner")
+        if (!apksigner.exists()) throw GradleException("鎵句笉鍒?apksigner锛?apksigner")
 
         val process = ProcessBuilder(
             apksigner.absolutePath, "verify", "--print-certs", apk.absolutePath
@@ -178,16 +167,14 @@ tasks.register("verifyReleaseSignature") {
         if (actual == null) {
             throw GradleException(
                 """
-                |release APK 未签名，装不上！
+                |release APK 鏈鍚嶏紝瑁呬笉涓婏紒
                 |
-                |本地构建请先在 local.properties 配置签名凭据：
-                |  QQBOT_STORE_FILE=../keystore.jks
+                |鏈湴鏋勫缓璇峰厛鍦?local.properties 閰嶇疆绛惧悕鍑嵁锛?                |  QQBOT_STORE_FILE=../keystore.jks
                 |  QQBOT_STORE_PASSWORD=***
                 |  QQBOT_KEY_ALIAS=***
                 |  QQBOT_KEY_PASSWORD=***
                 |
-                |apksigner 输出：
-                |$output
+                |apksigner 杈撳嚭锛?                |$output
                 """.trimMargin()
             )
         }
@@ -195,17 +182,16 @@ tasks.register("verifyReleaseSignature") {
         if (!actual.equals(expectedCertSha256, ignoreCase = true)) {
             throw GradleException(
                 """
-                |签名证书不匹配，这个包会导致已安装用户无法覆盖升级！
+                |绛惧悕璇佷功涓嶅尮閰嶏紝杩欎釜鍖呬細瀵艰嚧宸插畨瑁呯敤鎴锋棤娉曡鐩栧崌绾э紒
                 |
-                |  期望 (发布密钥): $expectedCertSha256
-                |  实际            : $actual
+                |  鏈熸湜 (鍙戝竷瀵嗛挜): $expectedCertSha256
+                |  瀹為檯            : $actual
                 |
-                |请确认 QQBOT_STORE_FILE 指向的是仓库配套的 keystore.jks。
-                """.trimMargin()
+                |璇风‘璁?QQBOT_STORE_FILE 鎸囧悜鐨勬槸浠撳簱閰嶅鐨?keystore.jks銆?                """.trimMargin()
             )
         }
 
-        logger.lifecycle("[签名校验通过] 证书 SHA-256 = $actual")
+        logger.lifecycle("[绛惧悕鏍￠獙閫氳繃] 璇佷功 SHA-256 = $actual")
     }
 }
 

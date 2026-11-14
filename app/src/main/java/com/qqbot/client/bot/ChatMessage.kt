@@ -57,6 +57,10 @@ data class ChatMessage(
     val messageId: String = "",
     val recalled: Boolean = false,
     val markdown: Boolean = false,
+    /** 发送者头像：直接取事件里的 author.avatar（带签名，实测群/私聊消息都有） */
+    val senderAvatar: String = "",
+    /** 群名片 nickname（member_nickname），私聊为空 */
+    val senderNickname: String = "",
     /** 本地自增序号，用于同一毫秒消息的稳定排序与分页游标 */
     val seq: Long = 0,
 ) {
@@ -65,6 +69,34 @@ data class ChatMessage(
         private val FACE_PATTERN = Regex("<faceType=\\d+,faceId=\"([^\"]+)\",ext=\"([^\"]*)\">")
         private val AT_PATTERN = Regex("<@!?([A-Za-z0-9_\\-]+)>")
         private val IMG_TAG = Regex("<(https?://[^<>]+)>")
+        /**
+         * OneBot v11 一类框架转发图片时，会在正文里留下类似
+         * `<attachmentType="image/jpeg",attachmentIndex=0,description="eyJ0...">` 的尾巴。
+         * 这些不是给人看的文本，必须整段剥掉（description 里是 base64 的 {"text":...}）。
+         */
+        private val ONEBOT_ATTACHMENT_TAG = Regex(
+            "<attachmentType=\"[^\"]*\"(?:\\s*,\\s*attachmentIndex=\\d+)?(?:\\s*,\\s*description=\"[^\"]*\")?\\s*/?>"
+        )
+        /** 兜底：任何含 attachmentType / attachmentIndex 的尖括号片段 */
+        private val ONEBOT_ATTACHMENT_LOOSE = Regex("<[^<>]*attachment(?:Type|Index)[^<>]*>")
+        /** Markdown 图片 ![alt](url) —— 交给 UI 渲染成图片，不按纯文本显示 */
+        val MD_IMAGE_PATTERN = Regex("!\\[([^\\]]*)\\]\\((https?://[^)\\s]+)\\)")
+
+        /**
+         * 收到的消息事件里没有 msg_type，只能按语法特征判断该不该走 Markdown 渲染。
+         * 典型场景：QQ 机器人 / OneBot 框架发来的 md 消息里带 ![图片](url)。
+         */
+        fun looksLikeMarkdown(s: String): Boolean {
+            if (s.isEmpty()) return false
+            return MD_IMAGE_PATTERN.containsMatchIn(s) ||
+                s.contains("```") ||
+                s.contains("**") ||
+                s.contains("](") ||
+                Regex("(?m)^#{1,6}\\s").containsMatchIn(s) ||
+                Regex("(?m)^>\\s").containsMatchIn(s) ||
+                Regex("(?m)^\\s*[-*]\\s+").containsMatchIn(s) ||
+                Regex("(?m)^---+\\s*$").containsMatchIn(s)
+        }
         // 参考实现用 msg_idx（REFIDX 的查询参数）；同时兼容部分网关返回的 ref_msg_idx
         private val MSG_IDX_PATTERN = Regex("[?&](?:ref_)?msg_idx=([^&]+)")
 
@@ -75,7 +107,15 @@ data class ChatMessage(
         fun fromEvent(eventType: String, d: JSONObject, botOpenId: String?): ChatMessage? {
             val groupOpenId = d.optString("group_openid")
             val author = d.optJSONObject("author") ?: JSONObject()
-            val memberOpenId = author.optString("member_openid").ifEmpty { author.optString("id") }
+            // 实测：群消息带 member_openid；私聊带 user_openid；两者都可能只有 id
+            val memberOpenId = author.optString("member_openid")
+                .ifEmpty { author.optString("user_openid") }
+                .ifEmpty { author.optString("id") }
+            // 实测：群消息带 member_nickname（群名片），私聊只有 username
+            val nickname = author.optString("member_nickname")
+            val userName = author.optString("username")
+            // 实测：作者的 avatar 直接下发（thirdqq.qlogo.cn/bqqthird?key=...&kti=...&s=640）
+            val avatar = author.optString("avatar")
 
             val chatType = when (eventType) {
                 QqBotConfig.EV_GROUP_AT_MESSAGE_CREATE, QqBotConfig.EV_GROUP_MESSAGE_CREATE -> ChatType.GROUP
@@ -150,13 +190,18 @@ data class ChatMessage(
                 chatKey = chatKey,
                 chatType = chatType,
                 senderOpenId = memberOpenId,
-                senderName = author.optString("username").ifEmpty { memberOpenId.takeLast(8) },
+                // QQ 群里显示群名片优先，没有再退回 QQ 昵称
+                senderName = nickname.ifEmpty { userName }.ifEmpty { memberOpenId.takeLast(8) },
+                senderNickname = nickname,
+                senderAvatar = avatar,
                 text = text,
                 segments = segments,
                 mentions = mentions,
                 quote = quote,
                 timestampMs = ts,
                 isSelf = isSelf,
+                // 收到的事件没有 msg_type，用语法特征判断；md 消息里的 ![](url) 才会被渲染成图
+                markdown = looksLikeMarkdown(rawContent),
                 messageId = d.optString("id"),
             )
         }
@@ -182,10 +227,16 @@ data class ChatMessage(
                 if (hit != null) "@${hit.name}" else "@"
             }
             s = IMG_TAG.replace(s, "")
+            // 剥掉 OneBot 一类框架残留的附件标记（先精确匹配，再宽松兜底）
+            s = ONEBOT_ATTACHMENT_TAG.replace(s, "")
+            s = ONEBOT_ATTACHMENT_LOOSE.replace(s, "")
             if (dropFaces) {
-                // 只有丢弃标签时才需要收敛空白；保留表情时原样维持排版
-                s = s.replace(Regex("[ \\t]{2,}"), " ").replace(Regex("\\n{3,}"), "\n\n")
+                // 丢弃表情标签后需要收敛空白，避免留下多余空格
+                s = s.replace(Regex("[ \\t]{2,}"), " ")
             }
+            // 剥标签后可能留下空行/行尾空格，统一收一下
+            s = s.replace(Regex("[ \\t]+$", RegexOption.MULTILINE), "")
+                .replace(Regex("\\n{3,}"), "\n\n")
             return s.trim()
         }
 

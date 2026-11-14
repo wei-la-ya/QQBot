@@ -132,6 +132,8 @@ fun ChatScreen(
     onAlbumPreview: (android.net.Uri) -> Unit = {},
     onAlbumPermission: () -> Unit = {},
     onAlbumToast: (String) -> Unit = {},
+    /** 通用轻提示（表情面板里点「超级表情」时用） */
+    onToast: (String) -> Unit = {},
 ) {
     var draft by remember(conversation.chatKey) { mutableStateOf("") }
 
@@ -149,10 +151,18 @@ fun ChatScreen(
     }
     var quote by remember(conversation.chatKey) { mutableStateOf<ChatMessage?>(null) }
     var showPlus by remember { mutableStateOf(false) }
+    // 表情面板状态提升到这里，才能和键盘/加号面板统一做互斥
+    var showEmoji by remember { mutableStateOf(false) }
+    val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+    // 统一收起：键盘 + 加号面板 + 表情面板 + 相册。QQ 里点聊天区就是全收
+    val dismissPanels: () -> Unit = {
+        keyboard?.hide()
+        showPlus = false
+        showEmoji = false
+        if (albumVisible) onCloseAlbum()
+    }
     var menuFor by remember { mutableStateOf<ChatMessage?>(null) }
     var showMemberPicker by remember { mutableStateOf(false) }
-    // 键盘控制：面板与键盘互斥时用来主动收起输入法
-    val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
     // 待发送的附件：由外部（相册）持有，这里只读
     val pendingAttachments = attachments
     val scope = rememberCoroutineScope()
@@ -242,11 +252,7 @@ fun ChatScreen(
                 .weight(1f)
                 // 与 QQ 一致：点击聊天区域收起键盘、关闭表情/加号面板与相册
                 .pointerInput(Unit) {
-                    detectTapGestures(onTap = {
-                        keyboard?.hide()
-                        showPlus = false
-                        if (albumVisible) onCloseAlbum()
-                    })
+                    detectTapGestures(onTap = { dismissPanels() })
                 }
         ) {
             LazyColumn(
@@ -294,6 +300,7 @@ fun ChatScreen(
                             selfName = account?.botName ?: "",
                             highlighted = msg.id == highlightMsgId,
                             onLongPress = { if (!msg.recalled) menuFor = msg },
+                            onClick = { dismissPanels() },
                             onAvatarClick = {
                                 if (!msg.isSelf && conversation.isGroup) {
                                     val m = members.firstOrNull { it.openId == msg.senderOpenId }
@@ -382,6 +389,9 @@ fun ChatScreen(
             members = members,
             appId = account?.appId ?: "",
             showPlus = showPlus,
+            showEmoji = showEmoji,
+            onShowEmojiChange = { showEmoji = it },
+            onToast = onToast,
             // 与 QQ 一致：表情/加号面板和键盘互斥，开面板先收键盘
             onTogglePlus = {
                 val next = !showPlus
@@ -394,6 +404,7 @@ fun ChatScreen(
             // 点击输入框：收起面板与相册，让键盘上来
             onInputFocused = {
                 if (showPlus) showPlus = false
+                if (showEmoji) showEmoji = false
                 if (albumVisible) onCloseAlbum()
             },
             onRequestClosePlus = { showPlus = false },
@@ -597,6 +608,8 @@ private fun MessageRow(
     selfName: String,
     highlighted: Boolean,
     onLongPress: () -> Unit,
+    /** 点消息本体 = 收起键盘与表情/加号面板（与 QQ 一致） */
+    onClick: () -> Unit = {},
     onAvatarClick: () -> Unit,
     onAvatarLongPress: () -> Unit,
     onImageClick: (String) -> Unit,
@@ -607,15 +620,17 @@ private fun MessageRow(
             .fillMaxWidth()
             .then(if (highlighted) Modifier.background(Color(0x22FFD700)) else Modifier)
             .padding(horizontal = 10.dp, vertical = 5.dp)
-            .combinedClickable(onClick = {}, onLongClick = onLongPress),
+            .combinedClickable(onClick = onClick, onLongClick = onLongPress),
         horizontalArrangement = if (self) Arrangement.End else Arrangement.Start,
         verticalAlignment = Alignment.Top,
     ) {
         if (!self) {
             Box(Modifier.combinedClickable(onClick = onAvatarClick, onLongClick = onAvatarLongPress)) {
                 QqAvatar(
-                    url = if (msg.senderOpenId.isNotEmpty() && appId.isNotEmpty())
-                        com.qqbot.client.bot.QqBotConfig.memberAvatar(appId, msg.senderOpenId) else null,
+                    // 优先用事件里下发的 author.avatar；没有才用拼接接口兜底
+                    url = msg.senderAvatar.ifEmpty {
+                        com.qqbot.client.bot.QqBotConfig.memberAvatar(appId, msg.senderOpenId)
+                    }.ifEmpty { null },
                     fallbackText = msg.senderName,
                     size = QQ.AvatarSizeSmall,
                 )
@@ -753,6 +768,10 @@ private fun ChatInputBar(
     appId: String,
     showPlus: Boolean,
     onTogglePlus: () -> Unit,
+    /** 表情面板由父级持有，保证与键盘/加号面板互斥 */
+    showEmoji: Boolean = false,
+    onShowEmojiChange: (Boolean) -> Unit = {},
+    onToast: (String) -> Unit = {},
     onInputFocused: () -> Unit = {},
     /** 请求上层关闭加号面板（表情面板打开时互斥） */
     onRequestClosePlus: () -> Unit = {},
@@ -765,7 +784,6 @@ private fun ChatInputBar(
     onRemoveAttachment: (android.net.Uri) -> Unit = {},
 ) {
     // 表情面板开关（与键盘、加号面板互斥）
-    var showEmoji by remember { mutableStateOf(false) }
     val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
     Column(Modifier.fillMaxWidth().background(Color(0xFFF7F7F9))) {
         // 待发送图片预览（图文混发）
@@ -804,7 +822,13 @@ private fun ChatInputBar(
                     .clip(RoundedCornerShape(6.dp)).background(Color.White)
                     .padding(horizontal = 10.dp, vertical = 9.dp)
                     // 输入框获得焦点（键盘弹出）时，关闭表情/加号面板与相册
-                    .onFocusChanged { st -> if (st.isFocused) onInputFocused() },
+                    .onFocusChanged { st ->
+                        if (st.isFocused) {
+                            onInputFocused()
+                            // 键盘与表情面板同一槽位：聚焦即收面板
+                            onShowEmojiChange(false)
+                        }
+                    },
             ) {
                 MentionTextField(
                     value = draft,
@@ -845,7 +869,7 @@ private fun ChatInputBar(
                 active = showEmoji,
             ) {
                 val next = !showEmoji
-                showEmoji = next
+                onShowEmojiChange(next)
                 // 与 QQ 一致：表情面板与键盘/加号面板互斥
                 if (next) {
                     keyboard?.hide()
@@ -892,6 +916,7 @@ private fun ChatInputBar(
                     onDraftChange(draft + c)
                 }
             },
+            onToast = onToast,
             onDelete = {
                 // 与 QQ 面板的删除键一致：整体删除一个表情标签，否则回退一个字符
                 val tagEnd = draft.lastIndexOf('>')
