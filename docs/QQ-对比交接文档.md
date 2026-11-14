@@ -383,6 +383,27 @@ c = true;   // 重置 i() 返回的拖动开关
 
 ---
 
+
+### 3.2 真实网关抓包结论（2026-11-14，43 条事件）
+
+用真实 appId/secret 连 `wss://api.sgroup.qq.com/websocket`，Identify 后统计 payload：
+
+| 结论 | 证据 |
+|---|---|
+| **`author.avatar` 基本每条消息都下发** | 24/24 条消息事件带 `avatar`，形如 `https://thirdqq.qlogo.cn/bqqthird?key=..&kti=..&s=640`（带签名，有时效） |
+| 拼接接口仍需保留作兜底 | `q.qlogo.cn/qqapp/{appid}/{openid}/100` 对**任意不存在的 openid 都返回同一张 4208 字节默认图**（用 3 个随机 openid 实测 sha 相同），所以只能用事件里的 avatar 判断真实头像 |
+| 群消息带群名片 | `author.member_nickname`（21/23），`username` 是 QQ 昵称；显示应 `member_nickname ?: username` |
+| 私聊结构不同 | C2C 事件 `member_openid = null`，用 `user_openid`；昵称只在 `username` |
+| **机器人自身 id 是纯数字** | READY 的 `user.id` 与 `/users/@me` 的 `id` 同为 `9084617195156459794`；成员 openid 才是 32 位 hex（如 `6700E368419E178356AB7E79970EBE34`） |
+| 图片消息的 content | `<faceType=6,faceId="0",ext="eyJ0ZXh0IjoiIn0=">` + `attachments[].url`；`ext` 是 base64 的 `{"text":""}` |
+| @ 提及 | 正文里是 `<@A2C65E5D597608FB027C84E2C661FFB1>`，与 `mentions[].id` 对应 |
+| 事件里**没有** msg_type | 收到的消息事件不带消息类型，md 与普通文本只能靠语法特征区分 |
+
+据此修正的实现（v1.8）：头像优先 `senderAvatar`、显示名优先 `member_nickname`、
+`looksLikeMarkdown()` 语法判定、剥离 OneBot 的 `attachmentType` 残留标签。
+
+> 抓包用的临时脚本与含用户昵称/openid 的日志已删除，未入库。
+
 ## 四、待做的事（逐层对比清单）
 
 对每一层，打开对应 QQ 类 → 找到真实行为 → 打开本项目实现 → 比对差异 → 修正 → 记录结论。
