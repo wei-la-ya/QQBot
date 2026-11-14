@@ -32,12 +32,43 @@ data class Mention(
 )
 
 /** 引用信息 */
-/** 合并转发卡片里的单条内联消息（来自 parallel_message.msg_nodes） */
-data class ForwardNode(
-    val content: String,
-    val messageType: Int,
+/**
+ * 消息元素节点（对应官方 `MsgElement`）。
+ *
+ * 官方 schema 里 `MsgElement` 自身带 `msg_elements`，是**递归结构**，
+ * 所以合并转发可以嵌套；`message_type` 明确有
+ * 0=普通文本 / 3=结构化卡片 / 101=并行消息 / 102=聊天记录 / 103=引用消息。
+ */
+data class MsgNode(
+    val msgIdx: String = "",
+    val authorName: String = "",
+    val authorAvatar: String = "",
+    val messageType: Int = 0,
+    val content: String = "",
+    /** 该节点自带的图片（取第一张） */
     val imageUrl: String = "",
-)
+    /** 图片宽高，用于按比例排版 */
+    val imageW: Int = 0,
+    val imageH: Int = 0,
+    /** 嵌套的子元素（嵌套合并转发时非空） */
+    val children: List<MsgNode> = emptyList(),
+) {
+    /** 102=聊天记录（合并转发）；101=并行消息，同样按卡片展示 */
+    val isForward: Boolean get() = messageType == 102 || messageType == 101
+
+    /** 卡片上/列表里显示的摘要 */
+    val summary: String
+        get() = when {
+            content.isNotEmpty() -> content
+            imageUrl.isNotEmpty() -> "[图片]"
+            children.isNotEmpty() -> "聊天记录"
+            else -> "[消息]"
+        }
+
+    /** 递归统计所有消息条数（含嵌套） */
+    val totalCount: Int
+        get() = if (children.isEmpty()) 1 else children.sumOf { it.totalCount }
+}
 
 data class QuoteRef(
     val messageId: String,
@@ -72,8 +103,10 @@ data class ChatMessage(
     val senderNickname: String = "",
     /** QQ 昵称（author.username），群昵称之外的真实昵称 */
     val senderQqNickname: String = "",
-    /** 合并转发的内联消息；非空时 UI 渲染成「卡片」而不是普通气泡 */
-    val forwardNodes: List<ForwardNode> = emptyList(),
+    /** 合并转发 / 聊天记录的内联消息（递归，可嵌套） */
+    val forwardNodes: List<MsgNode> = emptyList(),
+    /** 本条是否为合并转发（聊天记录） */
+    val isForward: Boolean = false,
     /** 本地自增序号，用于同一毫秒消息的稳定排序与分页游标 */
     val seq: Long = 0,
 ) {
@@ -197,28 +230,31 @@ data class ChatMessage(
             // 4. 引用
             val quote = extractQuote(d, elements)
 
-            // 合并转发：内联消息都在 parallel_message.msg_nodes 里。
-            // 单条且就是本条引用摘要时不要误判成转发（引用消息也会带 1 个 node）。
-            val forwardNodes = mutableListOf<ForwardNode>()
-            d.optJSONObject("parallel_message")?.optJSONArray("msg_nodes")?.let { nodes ->
-                for (i in 0 until nodes.length()) {
-                    val n = nodes.optJSONObject(i) ?: continue
-                    val c = n.optString("content")
-                    val mt = n.optInt("message_type", 0)
-                    var img = ""
-                    n.optJSONArray("attachments")?.let { arr ->
-                        for (k in 0 until arr.length()) {
-                            val at = arr.optJSONObject(k) ?: continue
-                            if (!at.optString("content_type").startsWith("image/")) continue
-                            img = android.text.Html.fromHtml(
-                                at.optString("url"), android.text.Html.FROM_HTML_MODE_LEGACY
-                            ).toString()
-                            if (img.isNotEmpty()) break
-                        }
-                    }
-                    if (c.isNotEmpty() || img.isNotEmpty()) forwardNodes.add(ForwardNode(c, mt, img))
+            // 合并转发/引用都走 msg_elements；官方 schema 里 MsgElement 自身还有
+            // msg_elements，所以这里是递归结构（支持嵌套合并转发）。
+            val elementsAll = d.optJSONArray("msg_elements")
+            val msgNodes = mutableListOf<MsgNode>()
+            if (elementsAll != null) {
+                for (i in 0 until elementsAll.length()) {
+                    val el = elementsAll.optJSONObject(i) ?: continue
+                    msgNodes.add(parseMsgNode(el))
                 }
             }
+            // 顶层 message_type：102=聊天记录；元素里出现 101/102 也按转发处理
+            val topType = d.optInt("message_type", 0)
+
+            // 实测：合并转发的内容是预格式化文本，不在 msg_elements 里
+            var recordNodes: List<MsgNode> = emptyList()
+            if (topType == 102 || isChatRecordText(rawContent)) {
+                recordNodes = parseChatRecord(rawContent)
+            }
+            if (recordNodes.isNotEmpty()) {
+                msgNodes.clear()
+                msgNodes.addAll(recordNodes)
+            }
+
+            val forwardFlag = topType == 102 || recordNodes.isNotEmpty() ||
+                msgNodes.any { it.messageType == 102 || it.messageType == 101 }
 
             val ts = parseTimestamp(d.optString("timestamp")) ?: System.currentTimeMillis()
             val isSelf = !botOpenId.isNullOrEmpty() && memberOpenId == botOpenId
@@ -232,7 +268,8 @@ data class ChatMessage(
                 senderName = nickname.ifEmpty { userName }.ifEmpty { memberOpenId.takeLast(8) },
                 senderNickname = nickname,
                 senderQqNickname = userName,
-                forwardNodes = forwardNodes,
+                forwardNodes = msgNodes,
+                isForward = forwardFlag,
                 senderAvatar = avatar,
                 text = text,
                 segments = segments,
@@ -296,6 +333,145 @@ data class ChatMessage(
                 }
                 if (name.isNotEmpty()) "[$name]" else "[表情]"
             }
+        }
+
+        // ===== 合并转发（message_type=102）的真实形态 =====
+        // 实测抓包：Q群机器人收到的合并转发**不是** msg_elements 结构，
+        // 而是把内容预先格式化成一整段纯文本塞在 content 里：
+        //   [群聊的聊天记录]
+        //   === 消息 1 ===
+        //   [发送者] 某人
+        //   [附件1] 类型:图片 文件名:a.jpg 尺寸:1080x1920 大小:493.9KB URL:https://...
+        private val RECORD_BLOCK = Regex("""===\s*消息\s*(\d+)\s*===""")
+        private val RECORD_SENDER = Regex("""^\[发送者\]\s*(.+)$""")
+        private val RECORD_ATTACH = Regex("""^\[附件(\d+)\]\s*(.*)$""")
+        private val RECORD_URL = Regex("""URL:(\S+)""")
+        private val RECORD_SIZE = Regex("""尺寸:(\d+)x(\d+)""")
+        private val RECORD_TYPE = Regex("""类型:([^\s]+)""")
+
+        /** 是否为「聊天记录」文本（合并转发） */
+        fun isChatRecordText(s: String): Boolean =
+            s.contains("=== 消息") && (s.contains("聊天记录") || s.contains("[发送者]"))
+
+        /**
+         * 把「聊天记录」文本解析成节点列表。
+         * 若某个消息块内部又嵌了聊天记录（嵌套合并转发），递归解析进 children。
+         */
+        fun parseChatRecord(text: String): List<MsgNode> {
+            if (!isChatRecordText(text)) return emptyList()
+            val parts = text.split(RECORD_BLOCK)
+            // parts[0] 是 "聊天记录" 头部，之后每段是一条消息
+            val nodes = mutableListOf<MsgNode>()
+            for (i in 1 until parts.size) {
+                val body = parts[i].trim()
+                if (body.isEmpty()) continue
+
+                // 嵌套：块内又出现 === 消息 ===，说明这条本身也是聊天记录
+                if (body.contains("=== 消息")) {
+                    val inner = parseChatRecord(body.substringAfter('\n', ""))
+                    if (inner.isNotEmpty()) {
+                        nodes.add(
+                            MsgNode(messageType = 102, children = inner)
+                        )
+                        continue
+                    }
+                }
+
+                var sender = ""
+                val texts = mutableListOf<String>()
+                var img = ""
+                var w = 0
+                var hgt = 0
+                for (raw in body.split('\n')) {
+                    val line = raw.trim()
+                    if (line.isEmpty()) continue
+                    RECORD_SENDER.find(line)?.let {
+                        sender = it.groupValues[1].trim()
+                        return@let
+                    }
+                    if (RECORD_SENDER.matches(line)) continue
+
+                    val att = RECORD_ATTACH.find(line)
+                    if (att != null) {
+                        val rest = att.groupValues[2]
+                        val type = RECORD_TYPE.find(rest)?.groupValues?.get(1) ?: ""
+                        if (type.contains("图片") || rest.contains("image/")) {
+                            RECORD_URL.find(rest)?.let { u ->
+                                if (img.isEmpty()) img = u.groupValues[1]
+                            }
+                            RECORD_SIZE.find(rest)?.let { sz ->
+                                w = sz.groupValues[1].toIntOrNull() ?: 0
+                                hgt = sz.groupValues[2].toIntOrNull() ?: 0
+                            }
+                        } else if (type.isNotEmpty()) {
+                            // 视频/语音/文件等先给个占位
+                            texts.add("[$type]")
+                        }
+                        continue
+                    }
+                    // 头部那一行不是消息内容
+                    if (line.startsWith("[") && line.endsWith("聊天记录]")) continue
+                    texts.add(line)
+                }
+
+                if (sender.isEmpty() && texts.isEmpty() && img.isEmpty()) continue
+                nodes.add(
+                    MsgNode(
+                        authorName = sender,
+                        messageType = if (img.isNotEmpty()) 7 else 0,
+                        content = texts.joinToString("\n"),
+                        imageUrl = img,
+                        imageW = w,
+                        imageH = hgt,
+                    )
+                )
+            }
+            return nodes
+        }
+
+        /** 递归解析一个 MsgElement（含嵌套 msg_elements） */
+        private fun parseMsgNode(el: JSONObject): MsgNode {
+            val a = el.optJSONObject("author")
+            val authorName = if (a != null) {
+                a.optString("username").ifEmpty { a.optString("member_nickname") }
+            } else ""
+            val authorAvatar = a?.optString("avatar").orEmpty()
+
+            var imageUrl = ""
+            var imageW = 0
+            var imageH = 0
+            el.optJSONArray("attachments")?.let { arr ->
+                for (k in 0 until arr.length()) {
+                    val at = arr.optJSONObject(k) ?: continue
+                    if (!at.optString("content_type").startsWith("image/")) continue
+                    imageUrl = android.text.Html.fromHtml(
+                        at.optString("url"), android.text.Html.FROM_HTML_MODE_LEGACY
+                    ).toString()
+                    imageW = at.optInt("width", 0)
+                    imageH = at.optInt("height", 0)
+                    if (imageUrl.isNotEmpty()) break
+                }
+            }
+
+            val kids = mutableListOf<MsgNode>()
+            el.optJSONArray("msg_elements")?.let { arr ->
+                for (k in 0 until arr.length()) {
+                    val child = arr.optJSONObject(k) ?: continue
+                    kids.add(parseMsgNode(child))
+                }
+            }
+
+            return MsgNode(
+                msgIdx = el.optString("msg_idx"),
+                authorName = authorName,
+                authorAvatar = authorAvatar,
+                messageType = el.optInt("message_type", 0),
+                content = sanitize(el.optString("content")),
+                imageUrl = imageUrl,
+                imageW = imageW,
+                imageH = imageH,
+                children = kids,
+            )
         }
 
         private fun extractQuote(d: JSONObject, elements: org.json.JSONArray?): QuoteRef? {

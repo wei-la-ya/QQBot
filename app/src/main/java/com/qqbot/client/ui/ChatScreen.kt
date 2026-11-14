@@ -39,6 +39,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -61,7 +62,7 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.qqbot.client.R
 import com.qqbot.client.bot.ChatMessage
-import com.qqbot.client.bot.ForwardNode
+import com.qqbot.client.bot.MsgNode
 import com.qqbot.client.bot.GroupMember
 import com.qqbot.client.bot.MessageSegment
 import com.qqbot.client.data.BotAccount
@@ -155,7 +156,7 @@ fun ChatScreen(
     // 表情面板状态提升到这里，才能和键盘/加号面板统一做互斥
     var showEmoji by remember { mutableStateOf(false) }
     // 合并转发明细弹层
-    var forwardView by remember { mutableStateOf<List<ForwardNode>?>(null) }
+    var forwardView by remember { mutableStateOf<List<MsgNode>?>(null) }
     val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
     // 统一收起：键盘 + 加号面板 + 表情面板 + 相册。QQ 里点聊天区就是全收
     val dismissPanels: () -> Unit = {
@@ -619,7 +620,7 @@ private fun MessageRow(
     onLongPress: () -> Unit,
     /** 点消息本体 = 收起键盘与表情/加号面板（与 QQ 一致） */
     onClick: () -> Unit = {},
-    onOpenForward: (List<ForwardNode>) -> Unit = {},
+    onOpenForward: (List<MsgNode>) -> Unit = {},
     onAvatarClick: () -> Unit,
     onAvatarLongPress: () -> Unit,
     onImageClick: (String) -> Unit,
@@ -667,7 +668,7 @@ private fun MessageRow(
                     modifier = Modifier.padding(vertical = 4.dp),
                 )
             } else {
-                if (msg.forwardNodes.size >= 2) {
+                if (msg.isForward) {
                     ForwardCard(msg, self) { onOpenForward(msg.forwardNodes) }
                 } else {
                     Bubble(msg, self, onImageClick)
@@ -995,14 +996,14 @@ private fun PlusItem(label: String, onClick: () -> Unit) {
 
 
 /**
- * 合并转发卡片。
+ * 合并转发卡片（对应官方 message_type=102「聊天记录」）。
  *
- * QQ 里合并转发不是普通气泡，而是一张卡片：标题 + 若干条预览 + 「查看N条消息」，
- * 点进去才展开内联消息。这里对齐这个形态。
+ * QQ 的形态：一张卡片，标题 + 若干条预览 + 「查看N条消息」，点进去才看内联消息。
  */
 @Composable
 private fun ForwardCard(msg: ChatMessage, self: Boolean, onOpen: () -> Unit) {
     val nodes = msg.forwardNodes
+    val total = nodes.sumOf { it.totalCount }
     Column(
         Modifier
             .widthIn(max = 240.dp)
@@ -1019,8 +1020,15 @@ private fun ForwardCard(msg: ChatMessage, self: Boolean, onOpen: () -> Unit) {
         )
         Spacer(Modifier.height(6.dp))
         nodes.take(4).forEach { n ->
+            val line = if (n.children.isNotEmpty() && n.content.isEmpty()) {
+                "聊天记录"
+            } else if (n.authorName.isNotEmpty()) {
+                "${n.authorName}: ${n.summary}"
+            } else {
+                n.summary
+            }
             Text(
-                text = n.content.ifEmpty { if (n.imageUrl.isNotEmpty()) "[图片]" else "[消息]" },
+                text = line,
                 fontSize = 12.sp,
                 color = if (self) Color(0xE6FFFFFF) else QQ.TextSecondary,
                 maxLines = 1,
@@ -1035,28 +1043,45 @@ private fun ForwardCard(msg: ChatMessage, self: Boolean, onOpen: () -> Unit) {
         )
         Spacer(Modifier.height(6.dp))
         Text(
-            text = "查看${nodes.size}条消息",
+            text = "查看${total}条消息",
             fontSize = 12.sp,
             color = if (self) Color.White else QQ.Blue,
         )
     }
 }
 
-/** 合并转发明细：点开卡片后看到的内联消息列表 */
+/**
+ * 合并转发明细。支持**嵌套合并转发**：点嵌套卡片进入下一层，可逐层返回。
+ * 结构依据官方 `MsgElement.msg_elements` 递归定义。
+ */
 @Composable
-private fun ForwardDetailDialog(nodes: List<ForwardNode>, onDismiss: () -> Unit) {
+private fun ForwardDetailDialog(nodes: List<MsgNode>, onDismiss: () -> Unit) {
+    // 用栈表示层级：栈顶就是当前展示的这层
+    val stack = remember { mutableStateListOf(nodes) }
+    val current = stack.lastOrNull() ?: nodes
+    val depth = stack.size
+
     androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
         Column(
             Modifier
                 .fillMaxWidth()
-                .heightIn(max = 480.dp)
+                .heightIn(max = 520.dp)
                 .clip(RoundedCornerShape(12.dp))
                 .background(Color.White)
                 .padding(14.dp),
         ) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                if (depth > 1) {
+                    Text(
+                        "返回",
+                        fontSize = 14.sp,
+                        color = QQ.Blue,
+                        modifier = Modifier.clickable { stack.removeAt(stack.lastIndex) },
+                    )
+                    Spacer(Modifier.width(10.dp))
+                }
                 Text(
-                    "聊天记录",
+                    if (depth > 1) "聊天记录（第${depth}层）" else "聊天记录",
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Medium,
                     color = QQ.TextPrimary,
@@ -1071,34 +1096,93 @@ private fun ForwardDetailDialog(nodes: List<ForwardNode>, onDismiss: () -> Unit)
             }
             Spacer(Modifier.height(8.dp))
             androidx.compose.foundation.lazy.LazyColumn(
-                Modifier.fillMaxWidth().heightIn(max = 420.dp),
+                Modifier.fillMaxWidth().heightIn(max = 460.dp),
             ) {
-                items(nodes.size) { i ->
-                    val n = nodes[i]
-                    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-                        if (n.content.isNotEmpty()) {
-                            Text(n.content, fontSize = 14.sp, color = QQ.TextPrimary)
-                        }
-                        if (n.imageUrl.isNotEmpty()) {
-                            coil.compose.AsyncImage(
-                                model = n.imageUrl,
-                                contentDescription = null,
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier
-                                    .padding(top = 4.dp)
-                                    .widthIn(max = 200.dp)
-                                    .heightIn(min = 60.dp)
-                                    .clip(RoundedCornerShape(4.dp)),
-                            )
-                        }
-                    }
-                    if (i < nodes.size - 1) {
-                        Box(
-                            Modifier.fillMaxWidth().height(0.5.dp).background(QQ.Divider)
-                        )
+                items(current.size) { i ->
+                    ForwardNodeRow(
+                        node = current[i],
+                        depth = 0,
+                        onEnterNested = { stack.add(it) },
+                    )
+                    if (i < current.size - 1) {
+                        Box(Modifier.fillMaxWidth().height(0.5.dp).background(QQ.Divider))
                     }
                 }
             }
+        }
+    }
+}
+
+/** 明细里的一行；嵌套转发渲染成可点击的子卡片 */
+@Composable
+private fun ForwardNodeRow(
+    node: MsgNode,
+    depth: Int,
+    onEnterNested: (List<MsgNode>) -> Unit,
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = (depth * 12).dp, top = 6.dp, bottom = 6.dp),
+    ) {
+        if (node.authorName.isNotEmpty()) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                QqAvatar(
+                    url = node.authorAvatar.ifEmpty { null },
+                    fallbackText = node.authorName,
+                    size = 18.dp,
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(node.authorName, fontSize = 11.sp, color = QQ.TextSecondary)
+            }
+            Spacer(Modifier.height(3.dp))
+        }
+
+        // 嵌套合并转发：再画一张小卡片
+        if (node.children.isNotEmpty()) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Color(0xFFF7F7F9))
+                    .clickable { onEnterNested(node.children) }
+                    .padding(10.dp),
+            ) {
+                Text("聊天记录", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = QQ.TextPrimary)
+                Spacer(Modifier.height(4.dp))
+                node.children.take(3).forEach { c ->
+                    Text(
+                        text = if (c.authorName.isNotEmpty()) "${c.authorName}: ${c.summary}" else c.summary,
+                        fontSize = 11.sp,
+                        color = QQ.TextSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "查看${node.totalCount}条消息",
+                    fontSize = 11.sp,
+                    color = QQ.Blue,
+                )
+            }
+        }
+
+        if (node.content.isNotEmpty()) {
+            if (node.children.isNotEmpty()) Spacer(Modifier.height(4.dp))
+            Text(node.content, fontSize = 14.sp, color = QQ.TextPrimary)
+        }
+        if (node.imageUrl.isNotEmpty()) {
+            Spacer(Modifier.height(4.dp))
+            coil.compose.AsyncImage(
+                model = node.imageUrl,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .widthIn(max = 200.dp)
+                    .heightIn(min = 60.dp, max = 240.dp)
+                    .clip(RoundedCornerShape(4.dp)),
+            )
         }
     }
 }
