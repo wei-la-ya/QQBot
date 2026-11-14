@@ -91,7 +91,8 @@ fun MarkdownText(
                     }
                 }
                 else -> {
-                    val img = Regex("!\\[[^\\]]*]\\(([^)\\s]+)").find(line)
+                    // 结尾的 ) 必须一起吃掉，否则 replace(img.value,"") 会留下一个孤零零的右括号
+                    val img = Regex("!\\[[^\\]]*]\\(([^)\\s]+)\\)?").find(line)
                     if (img != null) {
                         val imgUrl = img.groupValues[1]
                         // 本地缓存路径（file:// 或绝对路径）直接用 File 加载，避免再走网络

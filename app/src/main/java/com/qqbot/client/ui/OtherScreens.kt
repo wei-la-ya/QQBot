@@ -169,6 +169,8 @@ fun MeScreen(
     onAlbumModeChange: (AlbumMode) -> Unit,
     cacheBytes: Long = 0L,
     onCopyOpenId: (String) -> Unit = {},
+    /** 清昵称缓存（不动消息/图片） */
+    onClearNameCache: () -> Unit = {},
     onAddBot: () -> Unit,
     onSwitch: (String) -> Unit,
     onLogout: (String) -> Unit,
@@ -214,6 +216,19 @@ fun MeScreen(
             }
             StatusDot(gateway)
         }
+        // 昵称缓存清理：别人改了昵称但本地还显示旧名时用这个
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable { onClearNameCache() }
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("清除昵称缓存", fontSize = 14.sp, color = QQ.TextPrimary)
+            Spacer(Modifier.weight(1f))
+            Text("消息与图片不受影响", fontSize = 11.sp, color = QQ.TextHint)
+        }
+        Divider(color = QQ.Divider, thickness = 0.5.dp, modifier = Modifier.padding(start = 16.dp))
         Spacer(Modifier.height(12.dp))
 
         // 连接状态

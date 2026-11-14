@@ -533,6 +533,7 @@ class StorageManager(context: Context) {
         cv.put("chatKey", chatKey)
         cv.put("openId", member.openId)
         cv.put("nickname", member.nickname)
+        cv.put("qqNickname", member.qqNickname)
         cv.put("role", member.role.ifEmpty { oldRole })
         cv.put("isBot", if (member.isBot) 1 else oldIsBot)
         cv.put("lastActive", maxOf(member.lastActive, oldLastActive))
@@ -570,10 +571,24 @@ class StorageManager(context: Context) {
     }
 
     /** 群成员列表（按最近活跃排序） */
+    /**
+     * 清掉昵称类缓存：成员表（群昵称/QQ昵称/角色）。
+     * **不动 messages 与图片缓存**，下次收到消息会重新学习。
+     */
+    fun clearMemberCache(appId: String): Int {
+        return try {
+            val dbw = db.writableDatabase
+            dbw.delete("members", "appId=?", arrayOf(appId))
+        } catch (e: Exception) {
+            android.util.Log.w("StorageManager", "clearMemberCache failed", e)
+            0
+        }
+    }
+
     fun loadMembers(appId: String, chatKey: String): List<com.qqbot.client.bot.GroupMember> {
         val list = mutableListOf<com.qqbot.client.bot.GroupMember>()
         db.readableDatabase.rawQuery(
-            "SELECT openId, nickname, role, isBot, lastActive FROM members WHERE appId=? AND chatKey=? ORDER BY lastActive DESC",
+            "SELECT openId, nickname, qqNickname, role, isBot, lastActive FROM members WHERE appId=? AND chatKey=? ORDER BY lastActive DESC",
             arrayOf(appId, chatKey)
         ).use { c ->
             while (c.moveToNext()) {
@@ -581,9 +596,10 @@ class StorageManager(context: Context) {
                     com.qqbot.client.bot.GroupMember(
                         openId = c.getString(0),
                         nickname = c.getString(1) ?: "",
-                        role = c.getString(2) ?: "",
-                        isBot = c.getInt(3) == 1,
-                        lastActive = c.getLong(4),
+                        qqNickname = c.getString(2) ?: "",
+                        role = c.getString(3) ?: "",
+                        isBot = c.getInt(4) == 1,
+                        lastActive = c.getLong(5),
                     )
                 )
             }
@@ -602,7 +618,7 @@ class StorageManager(context: Context) {
         val list = mutableListOf<com.qqbot.client.bot.GroupMember>()
         db.readableDatabase.rawQuery(
             """
-            SELECT openId, nickname, role, isBot, lastActive FROM members
+            SELECT openId, nickname, qqNickname, role, isBot, lastActive FROM members
             WHERE appId=? AND chatKey=? AND (nickname LIKE ? OR openId LIKE ?)
             ORDER BY (nickname = ?) DESC, (openId = ?) DESC, lastActive DESC
             LIMIT ?
@@ -614,9 +630,10 @@ class StorageManager(context: Context) {
                     com.qqbot.client.bot.GroupMember(
                         openId = c.getString(0),
                         nickname = c.getString(1) ?: "",
-                        role = c.getString(2) ?: "",
-                        isBot = c.getInt(3) == 1,
-                        lastActive = c.getLong(4),
+                        qqNickname = c.getString(2) ?: "",
+                        role = c.getString(3) ?: "",
+                        isBot = c.getInt(4) == 1,
+                        lastActive = c.getLong(5),
                     )
                 )
             }
@@ -796,6 +813,7 @@ class StorageManager(context: Context) {
                     chatKey TEXT NOT NULL,
                     openId TEXT NOT NULL,
                     nickname TEXT,
+                    qqNickname TEXT,
                     role TEXT,
                     isBot INTEGER DEFAULT 0,
                     lastActive INTEGER DEFAULT 0,
@@ -820,6 +838,10 @@ class StorageManager(context: Context) {
             createIndexes(db)
             // v2 → v3：新增群成员表（@ 映射）
             if (oldVersion < 3) createMembersTable(db)
+            // v6 -> v7：members 表新增 qqNickname（QQ 昵称，区别于每个群不同的群昵称）
+            if (oldVersion < 7) {
+                runCatching { db.execSQL("ALTER TABLE members ADD COLUMN qqNickname TEXT") }
+            }
             // v3 → v4：记录机器人在群内的角色
             if (oldVersion < 4) {
                 runCatching { db.execSQL("ALTER TABLE conversations ADD COLUMN botRole TEXT DEFAULT ''") }
@@ -875,7 +897,7 @@ class StorageManager(context: Context) {
     companion object {
         private const val KEY_ACCOUNTS = "accounts"
         private const val KEY_CURRENT_APPID = "current_appid"
-        private const val VERSION = 6
+        private const val VERSION = 7
 
         /** 本地只保留最近 3 天消息 */
         const val RETENTION_DAYS = 3

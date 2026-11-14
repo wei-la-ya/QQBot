@@ -128,7 +128,8 @@ fun AlbumPanel(
     Column(
         Modifier
             .fillMaxWidth()
-            .fillMaxHeight(if (mode == AlbumMode.FULL) 1f else 0.5f)
+            // 高度完全交给调用方（半屏由外层 weight 盒子决定），这里再乘 0.5 会留白
+            .fillMaxSize()
             .background(Color.White)
     ) {
         // ===== 内容区（对应 layout/ez5 的 FrameLayout + RecyclerView，weight 撑满）=====

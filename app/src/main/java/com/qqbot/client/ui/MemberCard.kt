@@ -87,7 +87,7 @@ fun MemberCardDialog(
                 Spacer(Modifier.height(10.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        member.nickname.ifEmpty { "未知成员" },
+                        member.nickname.ifEmpty { member.qqNickname }.ifEmpty { "未知成员" },
                         fontSize = 17.sp, fontWeight = FontWeight.Medium, color = QQ.TextPrimary,
                     )
                     if (member.role == "owner" || member.role == "admin") {
@@ -101,6 +101,14 @@ fun MemberCardDialog(
                     }
                 }
                 Spacer(Modifier.height(4.dp))
+                if (member.qqNickname.isNotEmpty() && member.qqNickname != member.nickname) {
+                    Text(
+                        "QQ 昵称：${member.qqNickname}",
+                        fontSize = 10.sp, color = QQ.TextHint,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    )
+                    Spacer(Modifier.height(2.dp))
+                }
                 Text(
                     "OpenID: ${member.openId}",
                     fontSize = 10.sp, color = QQ.TextHint,

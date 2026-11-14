@@ -72,6 +72,8 @@ object AtSyntax {
 data class GroupMember(
     val openId: String,
     val nickname: String,
+    /** QQ 昵称；群昵称在不同群里可能不一样，这个不会 */
+    val qqNickname: String = "",
     val role: String = "",   // owner / admin / member
     val isBot: Boolean = false,
     val lastActive: Long = 0,
@@ -101,7 +103,14 @@ object MemberBook {
         if (msg.chatType != ChatType.GROUP) return out
         val senderId = msg.senderOpenId
         if (senderId.isNotEmpty() && senderId != botOpenId && !msg.isSelf) {
-            out.add(GroupMember(openId = senderId, nickname = msg.senderName, lastActive = msg.timestampMs))
+            out.add(
+                GroupMember(
+                    openId = senderId,
+                    nickname = msg.senderName,
+                    qqNickname = msg.senderQqNickname,
+                    lastActive = msg.timestampMs,
+                )
+            )
         }
         msg.mentions.forEach { m ->
             if (m.id.isNotEmpty() && m.id != botOpenId && !m.isYou) {

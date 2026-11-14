@@ -255,6 +255,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
         refreshConversations()
 
+        // 冷启动时 botOpenId 可能还是 /users/@me 的数字 id（旧版本留下的缓存），
+        // 用已存的群会话调一次 bot_state 把它换成真正的 32 位 hex openid。
+        viewModelScope.launch {
+            kotlinx.coroutines.delay(1200)
+            if (isHexOpenId(botOpenId)) return@launch
+            val groups = runCatching {
+                storage.loadConversations(account.appId)
+                    .filter { it.chatType == ChatType.GROUP }
+                    .map { it.chatKey }
+            }.getOrDefault(emptyList())
+            for (gid in groups) {
+                learnBotOpenIdFromGroup(account, gid)
+                kotlinx.coroutines.delay(800)
+                if (isHexOpenId(botOpenId)) break
+            }
+        }
+
         // 自身资料定时刷新：/users/@me 的 avatar 是带 kti/t 的签名 URL，会过期，
         // 只刷一次的话跑久了自己的头像就 403（之前注释写「每隔N分钟」但没有循环）。
         viewModelScope.launch {
@@ -1038,6 +1055,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // ==================== 群成员 / 禁言 ====================
 
     /** 查询单个成员资料并写入成员表（用于资料卡补全昵称与角色） */
+    /**
+     * 清除昵称类缓存（成员表里的群昵称/QQ昵称/角色），**不动消息与图片**。
+     * 用于修掉「别人改了昵称但本地还是旧的」这种情况，之后收到消息会重新学习。
+     */
+    fun clearNameCache() {
+        val appId = _state.value.currentAccount?.appId ?: return
+        viewModelScope.launch {
+            val n = withContext(Dispatchers.IO) { storage.clearMemberCache(appId) }
+            refreshConversations()
+            toast("已清除昵称缓存（消息与图片未动）")
+            android.util.Log.i("MainViewModel", "clearNameCache rows=$n")
+        }
+    }
+
     fun refreshMember(chatKey: String, openId: String) {
         val account = _state.value.currentAccount ?: return
         viewModelScope.launch {

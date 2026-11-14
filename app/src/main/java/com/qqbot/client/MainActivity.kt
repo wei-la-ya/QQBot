@@ -43,6 +43,7 @@ import com.qqbot.client.data.Conversation
 import com.qqbot.client.ui.ActivityScreen
 import com.qqbot.client.ui.AddBotScreen
 import com.qqbot.client.ui.ChatScreen
+import com.qqbot.client.ui.CameraScreen
 import com.qqbot.client.ui.ChatSearchDialog
 import com.qqbot.client.ui.ContactsScreen
 import com.qqbot.client.ui.GroupInfoScreen
@@ -78,6 +79,8 @@ private fun QQApp(vm: MainViewModel = viewModel()) {
     var addGroupDialog by remember { mutableStateOf(false) }
     var showGroupInfo by remember { mutableStateOf(false) }
     var showAlbum by remember { mutableStateOf(false) }
+    // 应用内相机
+    var showCamera by remember { mutableStateOf(false) }
     var albumVideoMode by remember { mutableStateOf(false) }
     // 相册模式：由 VM 持久化，默认半屏
     val albumMode = if (state.albumMode == "full") AlbumMode.FULL else AlbumMode.HALF
@@ -229,14 +232,8 @@ private fun QQApp(vm: MainViewModel = viewModel()) {
                 onPickVideo = { openAlbum(true) },
                 // 之前漏了这个回调，ChatScreen 里点「图片」走的是 onOpenAlbum 的默认空实现
                 onOpenAlbum = { video -> openAlbum(video) },
-                onPickCamera = {
-                    // 调系统相机拍照，拍完挂成待发送附件
-                    runCatching {
-                        val uri = makeCameraUri()
-                        cameraUri = uri
-                        cameraLauncher.launch(uri)
-                    }.onFailure { vm.toast("没有可用的相机应用") }
-                },
+                // 应用内相机（不再跳系统相机）
+                onPickCamera = { showCamera = true },
                 onRecall = { vm.recallMessage(activeConv.chatKey, it) },
                 onShowInfo = { showGroupInfo = true },
                 onShowMemberCard = {
@@ -356,6 +353,19 @@ private fun QQApp(vm: MainViewModel = viewModel()) {
             )
         }
 
+        // ===== 应用内相机 =====
+        if (showCamera) {
+            BackHandler { showCamera = false }
+            CameraScreen(
+                onClose = { showCamera = false },
+                onCaptured = { file ->
+                    showCamera = false
+                    vm.sendImage(activeConv.chatKey, android.net.Uri.fromFile(file))
+                },
+                onError = { vm.toast(it) },
+            )
+        }
+
         // ===== 全屏图片查看 =====
         viewerImage?.let { url ->
             BackHandler { viewerImage = null }
@@ -427,6 +437,7 @@ private fun QQApp(vm: MainViewModel = viewModel()) {
                     onAddBot = { showAddBot = true; addError = null },
                     onSwitch = { vm.switchAccount(it) },
                     onLogout = { vm.logout(it) },
+                    onClearNameCache = { vm.clearNameCache() },
                 )
             }
         }

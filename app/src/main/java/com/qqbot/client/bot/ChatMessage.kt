@@ -61,6 +61,8 @@ data class ChatMessage(
     val senderAvatar: String = "",
     /** 群名片 nickname（member_nickname），私聊为空 */
     val senderNickname: String = "",
+    /** QQ 昵称（author.username），群昵称之外的真实昵称 */
+    val senderQqNickname: String = "",
     /** 本地自增序号，用于同一毫秒消息的稳定排序与分页游标 */
     val seq: Long = 0,
 ) {
@@ -193,6 +195,7 @@ data class ChatMessage(
                 // QQ 群里显示群名片优先，没有再退回 QQ 昵称
                 senderName = nickname.ifEmpty { userName }.ifEmpty { memberOpenId.takeLast(8) },
                 senderNickname = nickname,
+                senderQqNickname = userName,
                 senderAvatar = avatar,
                 text = text,
                 segments = segments,
