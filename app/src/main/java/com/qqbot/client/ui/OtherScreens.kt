@@ -193,7 +193,7 @@ fun MeScreen(
                 Text("AppID: ${account?.appId ?: "-"}", fontSize = 12.sp, color = QQ.TextSecondary)
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    "机器人 ID: ${account?.botOpenId?.ifEmpty { "未获取" } ?: "-"}",
+                    "机器人 OpenID: ${account?.botOpenId?.ifEmpty { "未获取" } ?: "-"}",
                     fontSize = 11.sp,
                     color = QQ.TextHint,
                     maxLines = 1,

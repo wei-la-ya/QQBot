@@ -222,7 +222,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val self = client.getSelfInfo()
             if (self.ok) {
-                botOpenId = self.data.optString("id").ifEmpty { botOpenId }
+                // 注意：/users/@me 的 id 是「机器人 ID」数字串，不是消息里用的 openid。
+                // 之前这里会把它写进 botOpenId，导致学到的 32 位 hex openid 被冲掉、
+                // 自己发的消息识别不出 isSelf。只有当前为空、或不是 32 位 hex 时才回退用它。
+                val selfId = self.data.optString("id")
+                if (botOpenId.isEmpty() || !isHexOpenId(botOpenId)) {
+                    botOpenId = selfId.ifEmpty { botOpenId }
+                }
                 val latest = _state.value.currentAccount
                 if (latest != null && latest.appId == account.appId) {
                     val updated = latest.copy(
@@ -278,11 +284,51 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         gw.connect()
     }
 
+    /** 32 位 hex 才算真正的 openid，数字串是机器人 ID */
+    private fun isHexOpenId(s: String): Boolean =
+        s.length == 32 && s.all { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' }
+
+    /** 已通过 bot_state 学过 openid 的群，避免重复请求 */
+    private val botStateQueried = mutableSetOf<String>()
+
+    /**
+     * 用 GET /v2/groups/{group_openid}/bot_state 拿到机器人自身 openid。
+     * 每个群只需成功一次；失败（如 11253 无权限）不重试，退回 mentions 学习。
+     */
+    private fun learnBotOpenIdFromGroup(account: BotAccount, groupOpenId: String) {
+        if (groupOpenId.isEmpty()) return
+        if (isHexOpenId(botOpenId)) return
+        if (!botStateQueried.add("${account.appId}:$groupOpenId")) return
+        val client = apiClient ?: return
+        viewModelScope.launch {
+            val res = client.getGroupBotState(groupOpenId)
+            val oid = if (res.ok) res.data.optString("member_openid") else ""
+            if (isHexOpenId(oid) && oid != botOpenId) {
+                botOpenId = oid
+                val latest = _state.value.currentAccount
+                if (latest != null && latest.appId == account.appId) {
+                    val updated = latest.copy(botOpenId = oid)
+                    _state.update { st ->
+                        st.copy(
+                            currentAccount = updated,
+                            accounts = st.accounts.map { a -> if (a.appId == account.appId) updated else a },
+                        )
+                    }
+                }
+                withContext(Dispatchers.IO) { saveSelfOpenId(account.appId, oid) }
+            }
+        }
+    }
+
     private fun handleEvent(account: BotAccount, type: String, d: JSONObject) {
         when (type) {
             QqBotConfig.EV_GROUP_AT_MESSAGE_CREATE,
             QqBotConfig.EV_GROUP_MESSAGE_CREATE,
             QqBotConfig.EV_C2C_MESSAGE_CREATE -> {
+                // 群消息顺带用 bot_state 学一次机器人自身 openid（拿不到就靠 mentions 兜底）
+                if (type != QqBotConfig.EV_C2C_MESSAGE_CREATE) {
+                    learnBotOpenIdFromGroup(account, d.optString("group_openid"))
+                }
                 val msg = ChatMessage.fromEvent(type, d, botOpenId.ifEmpty { account.botOpenId }) ?: return
                 onIncoming(account, msg)
             }

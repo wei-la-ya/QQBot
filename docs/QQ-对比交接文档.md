@@ -404,6 +404,38 @@ c = true;   // 重置 i() 返回的拖动开关
 
 > 抓包用的临时脚本与含用户昵称/openid 的日志已删除，未入库。
 
+
+### 3.3 机器人自身 openid：用 bot_state 接口取（2026-11-14 实测）
+
+原以为“机器人自身 id 只能是数字”，**是错的**。`GET /v2/groups/{group_openid}/bot_state`
+返回的 `member_openid` 才是机器人真正的 openid：
+
+```
+两个不同群分别请求：
+  群 68BF8620… → member_openid = 16A7816F489D11BAF3BFF6789C6CA16A
+  群 88DFF813… → member_openid = 16A7816F489D11BAF3BFF6789C6CA16A   ← 完全相同
+```
+
+结论：
+- 机器人 openid 是 **32 位 hex**，且**跨群一致**（不是每群不同）
+- 与 `/users/@me` 的 `id`（数字型 `9084617195156459794`）、READY 的 `user.id` 是两回事
+- 该 openid 与消息里 `author.member_openid`、`mentions[].id`（is_you=true）同源，
+  所以**用它做 isSelf 判断才正确**
+- 接口需要 `group_openid`；用假 openid 请求返回 `11255 资源不存在`，
+  说明本应用**有权限**（若返回 `11253` 则代表仅白名单可用）
+
+顺带验证头像拼接接口：用**真实** openid 请求
+`q.qlogo.cn/qqapp/{appid}/{openid}/100` 返回 **19846 字节真实头像**，
+而随机假 openid 返回 4208 字节默认图 —— 说明
+**只要 openid 真实，拼接接口就能拿到头像**，此前“机器人拿不到成员头像”的结论作废。
+
+### v1.9 修复（据 3.3）
+- `/users/@me` 的刷新**不再覆盖** `botOpenId`（之前每次都把 hex openid 冲成数字 id，
+  导致自己发的消息识别不出 isSelf）
+- 群消息到达时用 `bot_state` 学一次机器人 openid 并持久化；
+  `mentions.is_you` 与自身消息作为兜底
+- 「我的」页标签改为「机器人 OpenID」
+
 ## 四、待做的事（逐层对比清单）
 
 对每一层，打开对应 QQ 类 → 找到真实行为 → 打开本项目实现 → 比对差异 → 修正 → 记录结论。
