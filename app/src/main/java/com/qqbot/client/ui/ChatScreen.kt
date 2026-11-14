@@ -872,6 +872,16 @@ private fun ChatInputBar(
                     onDraftChange(draft + c)
                 }
             },
+            onDelete = {
+                // 与 QQ 面板的删除键一致：整体删除一个表情标签，否则回退一个字符
+                val tagEnd = draft.lastIndexOf('>')
+                val tagStart = draft.lastIndexOf("<faceType=")
+                if (tagStart >= 0 && tagEnd > tagStart && tagEnd == draft.length - 1) {
+                    onDraftChange(draft.substring(0, tagStart))
+                } else if (draft.isNotEmpty()) {
+                    onDraftChange(draft.dropLast(1))
+                }
+            },
         )
     }
 }
