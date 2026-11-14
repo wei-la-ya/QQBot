@@ -123,6 +123,23 @@ jobs:
       # 每次推到 main/master，都会更新一个「latest」滚动 Release，
       # 里面的 QQBot.apk 始终是最新构建；打 v* 标签则额外发正式版本。
 
+      # 先删掉滚动 Release 里除 QQBot.apk 外的旧附件，避免版本文件越积越多
+      - name: Clean previous rolling assets
+        if: github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          API="${{ github.api_url }}/repos/${{ github.repository }}"
+          RELEASE_ID=$(curl -s -H "Authorization: token $GH_TOKEN" "$API/releases/tags/latest" \
+            | jq -r '.id // empty')
+          if [ -z "$RELEASE_ID" ]; then echo "no existing latest release"; exit 0; fi
+          curl -s -H "Authorization: token $GH_TOKEN" "$API/releases/$RELEASE_ID/assets" \
+            | jq -r '.[] | select(.name != "QQBot.apk") | "\(.id) \(.name)"' \
+            | while read -r ID NAME; do
+                echo "delete asset $NAME ($ID)"
+                curl -s -X DELETE -H "Authorization: token $GH_TOKEN" "$API/releases/assets/$ID"
+              done
+
       - name: Publish rolling release (latest)
         if: github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
@@ -139,7 +156,6 @@ jobs:
             下载 `QQBot.apk` 直接安装（已签名）。
           files: |
             dist/QQBot.apk
-            dist/QQBot-v${{ steps.apk.outputs.version }}.apk
           prerelease: false
           make_latest: true
 
