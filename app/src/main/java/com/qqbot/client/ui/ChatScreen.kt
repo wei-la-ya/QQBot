@@ -126,8 +126,12 @@ fun ChatScreen(
     albumMode: AlbumMode = AlbumMode.HALF,
     albumVideoMode: Boolean = false,
     onAlbumDismiss: () -> Unit = {},
-    onAlbumConfirm: (List<android.net.Uri>) -> Unit = {},
+    onAlbumConfirm: (List<android.net.Uri>, Boolean) -> Unit = { _, _ -> },
     onAlbumDragToChat: (android.net.Uri) -> Unit = {},
+    onAlbumPickFromSystem: () -> Unit = {},
+    onAlbumPreview: (android.net.Uri) -> Unit = {},
+    onAlbumPermission: () -> Unit = {},
+    onAlbumToast: (String) -> Unit = {},
 ) {
     var draft by remember(conversation.chatKey) { mutableStateOf("") }
 
@@ -450,6 +454,10 @@ fun ChatScreen(
                         onDragToChat = onAlbumDragToChat,
                         initialSelected = attachments,
                         onSelectionChange = onAttachmentsChange,
+                        onPickFromSystemAlbum = onAlbumPickFromSystem,
+                        onPreview = onAlbumPreview,
+                        onPermission = onAlbumPermission,
+                        onToast = onAlbumToast,
                     )
                 }
             } else {
@@ -470,6 +478,10 @@ fun ChatScreen(
                 onDragToChat = onAlbumDragToChat,
                 initialSelected = attachments,
                 onSelectionChange = onAttachmentsChange,
+                onPickFromSystemAlbum = onAlbumPickFromSystem,
+                onPreview = onAlbumPreview,
+                onPermission = onAlbumPermission,
+                onToast = onAlbumToast,
             )
         }
     }
@@ -825,7 +837,13 @@ private fun ChatInputBar(
             InputIcon(R.drawable.skin_aio_voice_nor, "语音") { /* 语音待接入 SILK */ }
             InputIcon(R.drawable.qui_image_aio_oversized, "图片") { onPickImage() }
             InputIcon(R.drawable.qui_camera_aio_oversized, "相机") { onPickCamera() }
-            InputIcon(R.drawable.qui_emoticon_aio_oversized, "表情", active = showEmoji) {
+            InputIcon(
+                // 与 QQ 一致：面板展开时图标切换为键盘图标（skin_aio_keyboard_nor），
+                // 收起时恢复表情图标。QQ 输入栏是程序化构建，两个图标资源同时存在于 classes4.dex。
+                icon = if (showEmoji) R.drawable.skin_aio_keyboard_nor else R.drawable.qui_emoticon_aio_oversized,
+                label = if (showEmoji) "键盘" else "表情",
+                active = showEmoji,
+            ) {
                 val next = !showEmoji
                 showEmoji = next
                 // 与 QQ 一致：表情面板与键盘/加号面板互斥
@@ -842,9 +860,11 @@ private fun ChatInputBar(
             ) {
                 Image(
                     painter = painterResource(
-                        if (showPlus) R.drawable.skin_aio_more_pressed else R.drawable.skin_aio_more_nor
+                        // 与 QQ 一致：加号面板展开时也切成键盘图标
+                        if (showPlus) R.drawable.skin_aio_keyboard_nor else R.drawable.skin_aio_more_nor
                     ),
-                    contentDescription = "更多", modifier = Modifier.size(24.dp),
+                    contentDescription = if (showPlus) "键盘" else "更多",
+                    modifier = Modifier.size(24.dp),
                 )
             }
         }

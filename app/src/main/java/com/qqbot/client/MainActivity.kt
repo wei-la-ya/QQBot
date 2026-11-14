@@ -251,8 +251,8 @@ private fun QQApp(vm: MainViewModel = viewModel()) {
                 albumMode = albumMode,
                 albumVideoMode = albumVideoMode,
                 onAlbumDismiss = { showAlbum = false },
-                // 相册里勾选后点「发送」：直接发送（QQ 行为）
-                onAlbumConfirm = { uris ->
+                // 相册里勾选后点「发送」：直接发送（QQ PhotoPanelVB 发送按钮行为）
+                onAlbumConfirm = { uris, _ ->
                     showAlbum = false
                     pendingAttachments = emptyList()
                     if (uris.isNotEmpty()) {
@@ -263,9 +263,24 @@ private fun QQApp(vm: MainViewModel = viewModel()) {
                         }
                     }
                 },
-                // 拖到聊天区松手：立即发送
-                onAlbumDragToChat = { uri ->
+                // 底栏「相册」→ 跳系统相册（QQ: PhotoPanelVM.jumpToAlbum）
+                onAlbumPickFromSystem = {
                     showAlbum = false
+                    runCatching {
+                        val intent = android.content.Intent(
+                            android.content.Intent.ACTION_PICK,
+                            android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                        )
+                        context.startActivity(intent)
+                    }.onFailure { vm.toast("没有可用的相册应用") }
+                },
+                // 点击缩略图 → 全屏预览（QQ: PhotoPanelAdapter.b0 → PhotoPanelVM.h0）
+                onAlbumPreview = { uri -> viewerImage = uri.toString() },
+                onAlbumPermission = { openAlbum(albumVideoMode) },
+                onAlbumToast = { vm.toast(it) },
+                // 从相册里滑出去 → 立即发送这一张（QQ PhotoPanelVM 的 i.h → sendSingleMediaInfo）
+                // 注意：QQ 滑出发送**不关闭面板**，只发这一张并刷新列表（h.m 里仅 notifyDataSetChanged）
+                onAlbumDragToChat = { uri ->
                     if (albumVideoMode) vm.sendVideo(activeConv.chatKey, uri)
                     else vm.sendImage(activeConv.chatKey, uri)
                 },
