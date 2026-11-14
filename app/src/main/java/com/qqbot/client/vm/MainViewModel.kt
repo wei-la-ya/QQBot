@@ -234,7 +234,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     val updated = latest.copy(
                         botName = self.data.optString("username").ifEmpty { latest.botName },
                         botOpenId = botOpenId,
-                        avatar = self.data.optString("avatar").replace("http://", "https://"),
+                        // 用 ifEmpty 兜底：接口没返回 avatar 时不要清掉现有头像
+                        avatar = self.data.optString("avatar")
+                            .replace("http://", "https://")
+                            .ifEmpty { latest.avatarUrl },
                     )
                     _state.update {
                         it.copy(
@@ -251,6 +254,32 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
 
         refreshConversations()
+
+        // 自身资料定时刷新：/users/@me 的 avatar 是带 kti/t 的签名 URL，会过期，
+        // 只刷一次的话跑久了自己的头像就 403（之前注释写「每隔N分钟」但没有循环）。
+        viewModelScope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(30 * 60 * 1000L)
+                val self = client.getSelfInfo()
+                if (!self.ok) continue
+                val latest = _state.value.currentAccount ?: continue
+                if (latest.appId != account.appId) continue
+                val newAvatar = self.data.optString("avatar")
+                    .replace("http://", "https://")
+                    .ifEmpty { latest.avatarUrl }
+                val updated = latest.copy(
+                    botName = self.data.optString("username").ifEmpty { latest.botName },
+                    avatar = newAvatar,
+                )
+                _state.update { st ->
+                    st.copy(
+                        currentAccount = updated,
+                        accounts = st.accounts.map { a -> if (a.appId == account.appId) updated else a },
+                    )
+                }
+                withContext(Dispatchers.IO) { storage.saveAccounts(_state.value.accounts) }
+            }
+        }
 
         val gw = GatewayClient(
             appId = account.appId,

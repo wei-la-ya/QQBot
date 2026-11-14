@@ -185,7 +185,15 @@ fun MeScreen(
             Modifier.fillMaxWidth().background(Color.White).padding(16.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            QqAvatar(account?.avatarUrl?.ifEmpty { null }, account?.botName ?: "QQ", 60.dp)
+            QqAvatar(
+                account?.avatarUrl?.ifEmpty { null },
+                account?.botName ?: "QQ",
+                60.dp,
+                // 签名 URL 过期时用机器人 openid 拼接兜底
+                fallbackUrl = com.qqbot.client.bot.QqBotConfig.memberAvatar(
+                    account?.appId.orEmpty(), account?.botOpenId.orEmpty()
+                ),
+            )
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
                 Text(account?.botName ?: "未登录", fontSize = 18.sp, fontWeight = FontWeight.Medium, color = QQ.TextPrimary)
@@ -262,7 +270,14 @@ fun MeScreen(
                     .padding(horizontal = 16.dp, vertical = 14.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                QqAvatar(a.avatarUrl.ifEmpty { null }, a.botName, 36.dp)
+                QqAvatar(
+                a.avatarUrl.ifEmpty { null },
+                a.botName,
+                36.dp,
+                fallbackUrl = com.qqbot.client.bot.QqBotConfig.memberAvatar(
+                    a.appId, a.botOpenId
+                ),
+            )
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
                     Text(a.botName, fontSize = 15.sp, color = QQ.TextPrimary)

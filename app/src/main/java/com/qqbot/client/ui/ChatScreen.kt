@@ -633,6 +633,8 @@ private fun MessageRow(
                     }.ifEmpty { null },
                     fallbackText = msg.senderName,
                     size = QQ.AvatarSizeSmall,
+                    // 签名 URL 过期时用 openid 拼接兜底
+                    fallbackUrl = com.qqbot.client.bot.QqBotConfig.memberAvatar(appId, msg.senderOpenId),
                 )
             }
             Spacer(Modifier.width(8.dp))
@@ -661,7 +663,13 @@ private fun MessageRow(
 
         if (self) {
             Spacer(Modifier.width(8.dp))
-            QqAvatar(url = selfAvatar.ifEmpty { null }, fallbackText = selfName.ifEmpty { "我" }, size = QQ.AvatarSizeSmall)
+            QqAvatar(
+                url = selfAvatar.ifEmpty { null },
+                fallbackText = selfName.ifEmpty { "我" },
+                size = QQ.AvatarSizeSmall,
+                // 自身消息的 senderOpenId 就是机器人 openid，可直接拼接兜底
+                fallbackUrl = com.qqbot.client.bot.QqBotConfig.memberAvatar(appId, msg.senderOpenId),
+            )
         }
     }
 }

@@ -40,6 +40,8 @@ fun QqAvatar(
     size: Dp = QQ.AvatarSize,
     modifier: Modifier = Modifier,
     square: Boolean = false,
+    /** 第一张加载失败时的兜底地址（通常是 q.qlogo.cn 拼接出来的） */
+    fallbackUrl: String? = null,
 ) {
     val shape = if (square) RoundedCornerShape(size * 0.22f) else CircleShape
     Box(
@@ -49,8 +51,11 @@ fun QqAvatar(
             .background(colorFor(fallbackText)),
         contentAlignment = Alignment.Center,
     ) {
-        if (!url.isNullOrEmpty()) {
-            AsyncImageWithFallback(url, fallbackText, size)
+        val primary = url?.takeIf { it.isNotEmpty() }
+            ?: fallbackUrl?.takeIf { it.isNotEmpty() }
+        val secondary = fallbackUrl?.takeIf { it.isNotEmpty() && it != primary }
+        if (primary != null) {
+            AsyncImageWithFallback(primary, fallbackText, size, secondary)
         } else {
             Text(
                 text = fallbackText.take(1).uppercase(),
@@ -63,8 +68,25 @@ fun QqAvatar(
 }
 
 @Composable
-private fun AsyncImageWithFallback(url: String, fallbackText: String, size: Dp) {
+private fun AsyncImageWithFallback(
+    url: String,
+    fallbackText: String,
+    size: Dp,
+    fallbackUrl: String? = null,
+) {
     var failed = androidx.compose.runtime.remember(url) { androidx.compose.runtime.mutableStateOf(false) }
+    var failedSecond = androidx.compose.runtime.remember(url) { androidx.compose.runtime.mutableStateOf(false) }
+    // 第一张挂了就换拼接地址再试一次，仍失败才退化成首字
+    if (failed.value && !failedSecond.value && !fallbackUrl.isNullOrEmpty() && fallbackUrl != url) {
+        AsyncImage(
+            model = fallbackUrl,
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.size(size),
+            onError = { failedSecond.value = true },
+        )
+        return
+    }
     if (failed.value) {
         Text(
             text = fallbackText.take(1).uppercase(),
