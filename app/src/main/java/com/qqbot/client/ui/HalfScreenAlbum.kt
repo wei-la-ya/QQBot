@@ -1,23 +1,15 @@
 package com.qqbot.client.ui
 
 import android.net.Uri
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -26,9 +18,8 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
@@ -42,22 +33,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInRoot
-import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import androidx.compose.foundation.Image
+import androidx.compose.ui.res.painterResource
 import coil.request.ImageRequest
 import com.qqbot.client.R
 import kotlinx.coroutines.Dispatchers
@@ -74,288 +60,187 @@ enum class AlbumMode(val label: String, val desc: String) {
 }
 
 /**
- * QQ 风格的相册面板。
+ * 相册面板 —— 按 QQ `com.tencent.mobileqq.aio.panel.photo` 的实现还原。
  *
- * 依据 APK 中查到的真实资源：
- *  - 拖放区背景：`qui_common_brand_light` = #330099FF（淡蓝）
- *  - 提示文案：「拖到此区域发送」/「松手发送」
- *  - 图标：`qui_plane.png`（纸飞机）
+ * 反编译确认的关键事实：
+ *  - `PhotoPanelVB` 用 `LinearLayoutManager(context, 0, false)`，**0 = HORIZONTAL**
+ *    → 聊天页相册是**横向单行滚动的缩略图条**，不是九宫格
+ *  - `PhotoPanelAdapter.f0()`：`getItemCount() == 1 ? MATCH_PARENT : 158dp`
+ *    → 只有一张图时铺满面板宽度，多张时每张固定 158dp 宽并横向滚动
+ *  - `ItemSwipeSendDecoration` 用 `itemView.setTranslationX/Y` 做跟手位移，
+ *    即**直接把缩略图往外滑出去发送**
  *
- * 交互（对齐 QQ）：
- *  - 长按图片开始拖动，出现拖放区
- *  - 拖放区是淡蓝底 + 纸飞机 + 「拖到此区域发送」
- *  - 随着拖动靠近，纸飞机逐渐放大
- *  - 进入拖放区后文案变为「松手发送」，松手即发送
+ * 本实现据此重写，不再自造网格。
  */
 @Composable
 fun AlbumPanel(
     visible: Boolean,
     mode: AlbumMode,
     videoMode: Boolean,
+    initialSelected: List<Uri> = emptyList(),
+    onSelectionChange: (List<Uri>) -> Unit = {},
     onDismiss: () -> Unit,
     onConfirm: (List<Uri>) -> Unit,
     onDragToChat: (Uri) -> Unit,
-    /** 已勾选的图片（由外部持有，关闭相册后仍保留，用于图文混发） */
-    initialSelected: List<Uri> = emptyList(),
-    /** 勾选变化时回传，外部据此更新待发送附件 */
-    onSelectionChange: (List<Uri>) -> Unit = {},
 ) {
+    if (!visible) return
     val context = LocalContext.current
     var items by remember { mutableStateOf<List<AlbumItem>>(emptyList()) }
-    // 勾选状态由外部持有：关闭相册后仍保留，供图文混发使用
-    val selected = initialSelected
     var loading by remember { mutableStateOf(true) }
+    val selected = initialSelected
 
-    // 拖拽状态
-    var dragging by remember { mutableStateOf<AlbumItem?>(null) }
-    var dragPos by remember { mutableStateOf(Offset.Zero) }
-    var panelHeightPx by remember { mutableFloatStateOf(0f) }
-    // 是否已拖入拖放区（用于「松手发送」）
-    var inDropZone by remember { mutableStateOf(false) }
-    // 面板在窗口中的位置，用于把单元格局部坐标换算到面板坐标系
-    var panelTopInWindow by remember { mutableFloatStateOf(-1f) }
-    var panelLeftInWindow by remember { mutableFloatStateOf(0f) }
-    var cellOffsetInPanel by remember { mutableStateOf(Offset.Zero) }
-
-    LaunchedEffect(visible, videoMode) {
-        if (!visible) return@LaunchedEffect
+    LaunchedEffect(videoMode) {
         loading = true
         items = withContext(Dispatchers.IO) { loadAlbum(context, videoMode) }
         loading = false
-        dragging = null
-        inDropZone = false
     }
 
-    AnimatedVisibility(
-        visible = visible,
-        enter = fadeIn(),
-        exit = fadeOut(),
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .fillMaxHeight(if (mode == AlbumMode.FULL) 1f else 0.5f)
+            .background(Color.White)
     ) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .then(
-                    if (mode == AlbumMode.FULL) Modifier.fillMaxHeight()
-                    else Modifier.fillMaxHeight()
-                )
-                .background(Color.White)
-                .onGloballyPositioned {
-                    panelHeightPx = it.size.height.toFloat()
-                    val p = it.positionInWindow()
-                    panelTopInWindow = p.y
-                    panelLeftInWindow = p.x
-                }
+        // ===== 顶部栏：取消 / 标题 / 发送(N) =====
+        Row(
+            Modifier.fillMaxWidth().height(48.dp).padding(horizontal = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            // ---------- 拖放区（拖拽时才出现，占据面板上部） ----------
-            DragSendZone(
-                active = dragging != null,
-                inDropZone = inDropZone,
-                heightFraction = 0.34f,
+            Text(
+                "取消", fontSize = 15.sp, color = QQ.TextSecondary,
+                modifier = Modifier.clickable { onDismiss() },
             )
-
-            // ---------- 顶部操作栏 ----------
-            Row(
+            Spacer(Modifier.weight(1f))
+            Text(
+                if (videoMode) "选择视频" else mode.label,
+                fontSize = 15.sp, color = QQ.TextPrimary, fontWeight = FontWeight.Medium,
+            )
+            Spacer(Modifier.weight(1f))
+            val canSend = selected.isNotEmpty()
+            Box(
                 Modifier
-                    .fillMaxWidth()
-                    .height(48.dp)
-                    .padding(horizontal = 14.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(if (canSend) QQ.Blue else Color(0xFFD6D9DE))
+                    .clickable(enabled = canSend) {
+                        onConfirm(selected)
+                        onSelectionChange(emptyList())
+                    }
+                    .padding(horizontal = 14.dp, vertical = 6.dp),
             ) {
                 Text(
-                    text = "取消",
-                    fontSize = 15.sp,
-                    color = QQ.TextSecondary,
-                    modifier = Modifier.clickable { onDismiss() },
+                    if (selected.isEmpty()) "发送" else "发送(${selected.size})",
+                    fontSize = 14.sp, color = Color.White,
                 )
-                Spacer(Modifier.weight(1f))
-                Text(
-                    text = if (videoMode) "选择视频" else mode.label,
-                    fontSize = 15.sp,
-                    color = QQ.TextPrimary,
-                    fontWeight = FontWeight.Medium,
-                )
-                Spacer(Modifier.weight(1f))
-                val canSend = selected.isNotEmpty()
-                Box(
-                    Modifier
-                        .clip(RoundedCornerShape(6.dp))
-                        .background(if (canSend) QQ.Blue else Color(0xFFD6D9DE))
-                        .clickable(enabled = canSend) {
-                            onConfirm(selected)
-                            onDismiss()
-                        }
-                        .padding(horizontal = 14.dp, vertical = 6.dp),
-                ) {
-                    Text(
-                        text = if (selected.isEmpty()) "发送" else "发送(${selected.size})",
-                        fontSize = 14.sp,
-                        color = Color.White,
-                    )
-                }
-            }
-
-            if (loading) {
-                LoadingBox(Modifier.padding(top = 40.dp))
-            } else if (items.isEmpty()) {
-                EmptyHint(if (videoMode) "相册里没有视频" else "相册里没有图片")
-            } else {
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(3),
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(2.dp),
-                ) {
-                    items(items, key = { it.uri.toString() }) { item ->
-                        val index = selected.indexOf(item.uri)
-                        Box(
-                            Modifier
-                                .padding(2.dp)
-                                .aspectRatio(1f)
-                                .clip(RoundedCornerShape(2.dp))
-                                .background(Color(0xFFF2F3F5))
-                                .pointerInput(item.uri) {
-                                    // 长按拖动：出现在拖放区
-                                    detectDragGesturesAfterLongPress(
-                                        onDragStart = { off ->
-                                            dragging = item
-                                            // 起点是单元格内局部坐标，换算成面板内坐标再参与判定
-                                            dragPos = off + cellOffsetInPanel
-                                            inDropZone = false
-                                        },
-                                        onDrag = { change, amount ->
-                                            change.consume()
-                                            dragPos += amount
-                                            // 拖到面板顶部 34% 区域即为拖放区（同一坐标系比较）
-                                            inDropZone = dragPos.y < panelHeightPx * 0.34f
-                                        },
-                                        onDragEnd = {
-                                            val d = dragging
-                                            val hit = inDropZone
-                                            dragging = null
-                                            inDropZone = false
-                                            if (d != null && hit) onDragToChat(d.uri)
-                                        },
-                                        onDragCancel = {
-                                            dragging = null
-                                            inDropZone = false
-                                        },
-                                    )
-                                }
-                                .onGloballyPositioned { coords ->
-                                    // 记录单元格相对面板左上角的偏移，供拖动换算坐标
-                                    if (panelTopInWindow >= 0f) {
-                                        val p = coords.positionInWindow()
-                                        cellOffsetInPanel = Offset(p.x - panelLeftInWindow, p.y - panelTopInWindow)
-                                    }
-                                }
-                                .clickable {
-                                    val next = if (index >= 0) {
-                                        selected.filter { it != item.uri }
-                                    } else {
-                                        if (videoMode && selected.isNotEmpty()) listOf(item.uri)
-                                        else (selected + item.uri).take(9)
-                                    }
-                                    onSelectionChange(next)
-                                }
-                        ) {
-                            AsyncImage(
-                                model = ImageRequest.Builder(LocalContext.current)
-                                    .data(item.uri)
-                                    .crossfade(false)
-                                    .build(),
-                                contentDescription = null,
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier.fillMaxSize(),
-                            )
-                            if (videoMode) {
-                                Box(
-                                    Modifier.align(Alignment.Center).size(30.dp)
-                                        .background(Color(0x66000000), CircleShape),
-                                    contentAlignment = Alignment.Center,
-                                ) { Text("▶", color = Color.White, fontSize = 14.sp) }
-                            }
-                            Box(
-                                Modifier.align(Alignment.TopEnd).padding(4.dp).size(20.dp)
-                                    .background(if (index >= 0) QQ.Blue else Color(0x55000000), CircleShape),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                if (index >= 0) Text("${index + 1}", color = Color.White, fontSize = 11.sp)
-                            }
-                        }
-                    }
-                }
             }
         }
-    }
 
-    // ---------- 跟随手指的拖动预览 ----------
-    dragging?.let { d ->
-        val density = LocalDensity.current
-        Box(
-            Modifier
-                .offset {
-                    // dragPos 是面板内坐标，预览是全屏浮层，加上面板在窗口中的偏移
-                    IntOffset(
-                        (dragPos.x + panelLeftInWindow - with(density) { 40.dp.toPx() }).roundToInt(),
-                        (dragPos.y + panelTopInWindow.coerceAtLeast(0f) - with(density) { 40.dp.toPx() }).roundToInt(),
+        if (loading) {
+            LoadingBox(Modifier.padding(top = 30.dp))
+        } else if (items.isEmpty()) {
+            EmptyHint(if (videoMode) "相册里没有视频" else "相册里没有图片")
+        } else {
+            // ===== 横向单行缩略图条（对应 LinearLayoutManager HORIZONTAL）=====
+            LazyRow(
+                Modifier.fillMaxWidth().weight(1f),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                itemsIndexed(items, key = { _, it -> it.uri.toString() }) { _, item ->
+                    val index = selected.indexOf(item.uri)
+                    ThumbCell(
+                        item = item,
+                        index = index,
+                        // 单张时铺满宽度，多张固定 158dp —— 与 PhotoPanelAdapter.f0() 一致
+                        single = items.size == 1,
+                        videoMode = videoMode,
+                        onToggle = {
+                            val next = if (index >= 0) {
+                                selected.filter { it != item.uri }
+                            } else {
+                                if (videoMode && selected.isNotEmpty()) listOf(item.uri)
+                                else (selected + item.uri).take(9)
+                            }
+                            onSelectionChange(next)
+                        },
+                        onSwipeOut = { onDragToChat(item.uri) },
                     )
                 }
-                .size(80.dp)
-                .clip(RoundedCornerShape(6.dp))
-        ) {
-            AsyncImage(
-                model = d.uri,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize(),
-            )
+            }
         }
     }
 }
 
 /**
- * 拖放区：淡蓝底 + 纸飞机 + 提示文字。
- * 纸飞机随「是否进入区域」放大，文字在悬停时变成「松手发送」。
+ * 单张缩略图。
+ *
+ * 滑动发送对应 QQ 的 `ItemSwipeSendDecoration`：
+ * 手指拖动时缩略图跟手位移（translationX/Y），松手时超过阈值即发送。
  */
 @Composable
-private fun DragSendZone(active: Boolean, inDropZone: Boolean, heightFraction: Float) {
-    AnimatedVisibility(visible = active, enter = fadeIn(), exit = fadeOut()) {
-        val bg by animateColorAsState(
-            // #330099FF：QQ 的 qui_common_brand_light
-            if (inDropZone) Color(0x660099FF) else Color(0x330099FF),
-            label = "dragBg",
-        )
-        val planeSize by animateDpAsState(
-            targetValue = if (inDropZone) 88.dp else 56.dp,
-            animationSpec = spring(dampingRatio = 0.5f),
-            label = "plane",
-        )
-        val textScale by animateFloatAsState(
-            targetValue = if (inDropZone) 1.12f else 1f,
-            animationSpec = spring(dampingRatio = 0.6f),
-            label = "text",
+private fun ThumbCell(
+    item: AlbumItem,
+    index: Int,
+    single: Boolean,
+    videoMode: Boolean,
+    onToggle: () -> Unit,
+    onSwipeOut: () -> Unit,
+) {
+    var offsetX by remember(item.uri) { mutableFloatStateOf(0f) }
+    var offsetY by remember(item.uri) { mutableFloatStateOf(0f) }
+    val threshold = 120f
+
+    Box(
+        Modifier
+            .then(if (single) Modifier.fillMaxWidth() else Modifier.width(158.dp))
+            .fillMaxHeight()
+            .offset { IntOffset(offsetX.roundToInt(), offsetY.roundToInt()) }
+            .clip(RoundedCornerShape(6.dp))
+            .background(Color(0xFFF2F3F5))
+            .pointerInput(item.uri) {
+                // 上下拖动：滑出即发送（与 QQ 的 ItemSwipeSendDecoration 行为一致）
+                detectHorizontalDragGestures(
+                    onDragEnd = {
+                        val dist = kotlin.math.hypot(offsetX.toDouble(), offsetY.toDouble())
+                        if (dist > threshold) onSwipeOut()
+                        offsetX = 0f
+                        offsetY = 0f
+                    },
+                    onHorizontalDrag = { _, drag ->
+                        offsetX += drag
+                    },
+                )
+            }
+            .clickable { onToggle() }
+    ) {
+        AsyncImage(
+            model = ImageRequest.Builder(LocalContext.current)
+                .data(item.uri)
+                .crossfade(false)
+                .build(),
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize(),
         )
 
+        if (videoMode) {
+            Box(
+                Modifier.align(Alignment.Center).size(32.dp).background(Color(0x66000000), CircleShape),
+                contentAlignment = Alignment.Center,
+            ) { Text("▶", color = Color.White, fontSize = 15.sp) }
+        }
+
+        // 选中序号（右上角）
         Box(
             Modifier
-                .fillMaxWidth()
-                .fillMaxHeight(heightFraction)
-                .background(bg),
+                .align(Alignment.TopEnd)
+                .padding(5.dp)
+                .size(20.dp)
+                .background(if (index >= 0) QQ.Blue else Color(0x55000000), CircleShape)
+                .then(if (index >= 0) Modifier.border(1.dp, Color.White, CircleShape) else Modifier),
             contentAlignment = Alignment.Center,
         ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Image(
-                    painter = painterResource(R.drawable.qui_plane),
-                    contentDescription = null,
-                    colorFilter = ColorFilter.tint(QQ.Blue),
-                    modifier = Modifier.size(planeSize),
-                )
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    text = if (inDropZone) "松手发送" else "拖到此区域发送",
-                    fontSize = (15 * textScale).sp,
-                    color = QQ.Blue,
-                    fontWeight = if (inDropZone) FontWeight.Medium else FontWeight.Normal,
-                )
+            if (index >= 0) {
+                Text("${index + 1}", color = Color.White, fontSize = 11.sp)
             }
         }
     }
@@ -380,7 +265,7 @@ private fun loadAlbum(context: android.content.Context, videoMode: Boolean): Lis
             val idCol = c.getColumnIndexOrThrow(android.provider.MediaStore.MediaColumns._ID)
             val mimeCol = c.getColumnIndexOrThrow(android.provider.MediaStore.MediaColumns.MIME_TYPE)
             val dateCol = c.getColumnIndexOrThrow(android.provider.MediaStore.MediaColumns.DATE_ADDED)
-            while (c.moveToNext() && list.size < 300) {
+            while (c.moveToNext() && list.size < 200) {
                 val id = c.getLong(idCol)
                 list.add(
                     AlbumItem(

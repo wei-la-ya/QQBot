@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -15,6 +17,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -31,6 +34,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -61,6 +65,15 @@ object EmoticonPanelSpec {
 
     /** 每个表情多占一格放删除键，所以实际每页可用表情数 = PAGE_SIZE - 1 */
     const val PER_PAGE_FACES = PAGE_SIZE - 1
+
+    /**
+     * 面板总高度，取自 layout/emoticon_aio_panel：
+     * 内容区 + 底部栏 45dp（dimen/nw = 45dp）+ 0.5dp 分隔线
+     */
+    const val BOTTOM_BAR_HEIGHT_DP = 45
+
+    /** 底部栏顶部分隔线，取自布局里 View 的 height=0.5dp */
+    const val DIVIDER_HEIGHT_DP = 0.5f
 }
 
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
@@ -82,8 +95,8 @@ fun EmojiPanel(
     Column(
         modifier
             .fillMaxWidth()
-            // 3 行表情 + 底部指示器，与 QQ 面板高度接近
-            .height(246.dp)
+            // 内容区 + 底部栏 45dp，与 layout/emoticon_aio_panel 一致
+            .height(240.dp)
             .background(Color.White)
     ) {
         HorizontalPager(
@@ -128,25 +141,55 @@ fun EmojiPanel(
             }
         }
 
-        // 底部页码指示器（对应 QQ 的 EmoticonPagerRadioGroup）
+        // ===== 底部栏：与 QQ 布局一致 =====
+        // 结构：0.5dp 分隔线 + 45dp 高的横条
+        //   左侧 51dp 分类图标（ImageView），右侧横向滚动的页签列表（HorizontalListViewEx, weight=1）
+        Box(Modifier.fillMaxWidth().height(EmoticonPanelSpec.DIVIDER_HEIGHT_DP.dp)
+            .background(Color(0xFFE5E5E5)))
+
         Row(
             Modifier
                 .fillMaxWidth()
-                .height(28.dp),
-            horizontalArrangement = Arrangement.Center,
+                .height(EmoticonPanelSpec.BOTTOM_BAR_HEIGHT_DP.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Dot(selected = pagerState.currentPage == 0) { scope.launch { pagerState.animateScrollToPage(0) } }
-            if (pageCount > 1) {
-                Spacer(Modifier.width(6.dp))
-                Dot(selected = pagerState.currentPage == 1) {
-                    scope.launch { pagerState.animateScrollToPage(1) }
-                }
+            // 左侧分类图标：51dp 宽，点它回到第一页
+            Box(
+                Modifier
+                    .width(51.dp)
+                    .fillMaxHeight()
+                    .clickable { scope.launch { pagerState.animateScrollToPage(0) } },
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = "😊",
+                    fontSize = 20.sp,
+                    color = if (pagerState.currentPage == 0) QQ.Blue else QQ.TextSecondary,
+                )
             }
-            if (pageCount > 2) {
-                Spacer(Modifier.width(6.dp))
-                Dot(selected = pagerState.currentPage >= 2) {
-                    scope.launch { pagerState.animateScrollToPage(2) }
+
+            // 右侧横向页签列表（对应 HorizontalListViewEx）
+            Row(
+                Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .horizontalScroll(rememberScrollState()),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                repeat(pageCount) { i ->
+                    Box(
+                        Modifier
+                            .size(40.dp)
+                            .clickable { scope.launch { pagerState.animateScrollToPage(i) } },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = "${i + 1}",
+                            fontSize = 13.sp,
+                            color = if (pagerState.currentPage == i) QQ.Blue else QQ.TextSecondary,
+                            fontWeight = if (pagerState.currentPage == i) FontWeight.Medium else FontWeight.Normal,
+                        )
+                    }
                 }
             }
         }

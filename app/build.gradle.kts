@@ -11,8 +11,8 @@ android {
         applicationId = "com.qqbot.client"
         minSdk = 24
         targetSdk = 34
-        versionCode = 6
-        versionName = "1.5"
+        versionCode = 7
+        versionName = "1.6"
     }
 
     buildTypes {
@@ -77,6 +77,7 @@ dependencies {
     testImplementation("org.robolectric:robolectric:4.12.2")
     testImplementation("androidx.test:core:1.5.0")
 }
+
 
 
 
