@@ -171,8 +171,8 @@ fun MeScreen(
     onCopyOpenId: (String) -> Unit = {},
     /** 清昵称缓存（不动消息/图片） */
     onClearNameCache: () -> Unit = {},
-    /** 聊天字号档位 0..6（QQ 的小/较小/标准/较大/大/超大/最大） */
-    fontLevel: Int = 2,
+    /** 聊天字号档位 0..3（QQ 的 17/18/20/22dp），见 FontLevel */
+    fontLevel: Int = 0,
     onFontLevelChange: (Int) -> Unit = {},
     onAddBot: () -> Unit,
     onSwitch: (String) -> Unit,
@@ -231,7 +231,8 @@ fun MeScreen(
             Text("字体大小", fontSize = 14.sp, color = QQ.TextPrimary)
             Spacer(Modifier.weight(1f))
             Text(
-                com.qqbot.client.data.FontLevel.of(fontLevel).label,
+                com.qqbot.client.data.FontLevel.of(fontLevel).label +
+                    if (fontLevel == 0) "（默认）" else "",
                 fontSize = 13.sp,
                 color = QQ.TextSecondary,
             )
@@ -258,7 +259,7 @@ fun MeScreen(
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Text(
-                                level.label,
+                                level.label + if (idx == 0) "（默认）" else "",
                                 fontSize = 15.sp,
                                 color = if (idx == fontLevel) QQ.Blue else QQ.TextPrimary,
                             )

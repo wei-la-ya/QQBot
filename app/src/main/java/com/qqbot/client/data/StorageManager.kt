@@ -130,11 +130,11 @@ class StorageManager(context: Context) {
     /** 相册展示模式：half / full */
     fun albumMode(): String = prefs.getString("album_mode", "half") ?: "half"
 
-    /** 聊天字号档位（0..6，对应 QQ 的小…最大 7 档） */
-    fun fontLevel(): Int = prefs.getInt("font_level", 2)
+    /** 聊天字号档位：0..3，对应 QQ 的 17/18/20/22dp（参见 FontLevel） */
+    fun fontLevel(): Int = prefs.getInt("font_level", 0)
 
     fun setFontLevel(index: Int) {
-        prefs.edit().putInt("font_level", index.coerceIn(0, 6)).apply()
+        prefs.edit().putInt("font_level", index.coerceIn(0, 3)).apply()
     }
 
     fun setAlbumMode(mode: String) {

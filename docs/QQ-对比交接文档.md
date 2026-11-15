@@ -614,22 +614,37 @@ UI：卡片（标题「聊天记录」+ 最多 4 行预览 + 「查看N条消息
 由新增的单测 `VoiceFormatTest` 抓出。
 
 
-### 3.10 字体大小（2026-11-15）
+### 3.10 字体大小：QQ 真实实现是 **4 档 17/18/20/22dp**（已反编译确认）
 
-**已取证**：QQ 资源里有 7 个档位字符串，顺序即
-`字体大小 小` → `较小` → `标准` → `较大` → `大` → `超大` → `最大`。
+定位过程（这次先扫全量 dex 找定义，没有再猜）：
+1. `Lcom/tencent/mobileqq/activity/ChatTextSizeSettingActivity;` 出现在
+   classes.dex / 3 / 7 / 13 / 33 / 35；而 `c13`（classes13.dex）**已经反编译过**，
+   直接在里面找到了该类（上一轮我只 grep 了 forward 关键字，漏了它）。
+2. `ChatTextSizeSettingActivity` 里 onClick 按 view id 分派 4 个档位：
+   ```
+   2131395617 → L=1    2131395616 → L=2    2131395614 → L=3    其它 → L=0
+   ```
+   `E1(int)` 把档位写进 `SharedPreferences("setting_text_size")` 的
+   `chat_text_size_type`，并切换每行右侧打勾图标（id 2131395615）的 visibility。
+3. `getChatTextSizeWithDP()` 把 dimen 换算成 dp：
+   | chat_text_size_type | dimen | 值 |
+   |---|---|---|
+   | 0（默认） | `dimen/c0` (0x7f070450) | **17dp** |
+   | 1 | `dimen/bz` (0x7f07044f) | **18dp** |
+   | 2 | `dimen/by` (0x7f07044e) | **20dp** |
+   | 3 | `dimen/bx` (0x7f07044d) | **22dp** |
+4. 设置页标题 string = **「字体大小」**（0x7f122d7b），布局 layout/g_（0x7f0d037c），
+   每档是一行预览文字（12sp）+ 选中打勾图标。
 
-**未取证**：每档的缩放倍率。`ChatTextSizeSettingActivity` 在已反编译的
-`c3`（classes3.dex）、`c18`、`c33` 等树里都**没有**该类，
-所以倍率只能自定近似值，已在 `FontLevel` 注释与本节显式标注，不冒称 QQ 原值。
+**因此本项目按真实值改为 4 档**（原先按资源字符串推测的 7 档「小…最大」是另一处的文案，
+不是聊天字号设置，已作废）：
+- 档位：`17dp / 18dp / 20dp / 22dp`，默认 17dp（= QQ 的 type 0）
+- 缩放系数：以 17dp 为基准 → 1.0 / 18/17 / 20/17 / 22/17
+- 生效方式仍是覆盖 `LocalDensity`，让文字/气泡/图片一起缩放
+- 单测 `FontLevelTest` 锁定：4 档、四个 dp 值、默认档、系数换算、越界回退
 
-**生效机制**：覆盖 `LocalDensity`，让 **dp 与 sp 一起缩放**
-（`Density(density * factor, fontScale)`），
-因此文字、气泡、图片、头像都会同步变大/变小 —— 这就是「切换后一屏显示更多/更少内容」的来源。
-比只改 sp 更接近 QQ 的实际观感（只改 sp 的话图片尺寸不会变，一屏内容量变化不明显）。
-
-入口：「我的」页 → 字体大小 → 7 档选择。
-持久化：`StorageManager.fontLevel()` / `setFontLevel()`（prefs，默认 标准）。
+> 与 QQ 的差异说明：QQ 这个设置只改**聊天正文字号**；
+> 本项目用整体缩放是为了让气泡/图片一并跟随，观感一致但实现路径不同。
 
 ### 3.11 合并转发卡片：QQ 是用 **ARK** 渲染的（已翻全 42 个 dex 确认）
 
