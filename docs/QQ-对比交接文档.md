@@ -680,6 +680,32 @@ ArkAppLoadLayout   id/0x7f0a46a2   layout_width=263dp  layout_height=294dp
 因此本项目现在的做法：宽度对齐 263dp、用文本预览填充内容（QQ 那 294dp 高度是给 ARK 内容的），
 并在代码注释里写明「内层 ARK 无法复刻」，**不冒称已与 QQ 像素级一致**。
 
+
+### 3.12 后台保活（v2.0，2026-11-15）
+
+**QQ 的做法**（扫全量 dex 确认）：`Lcom/tencent/mobileqq/msf/service/MsfService;`
+定义在 `classes2.dex`（已单类反编译确认），配合 `QQService` / `CoreService` 常驻，
+再加上厂商推送通道。`startForeground` 在 classes.dex/11/17/19/28/33 等 10 个 dex 里出现。
+
+**本项目的做法**（没有厂商推送，只能自维持连接）：
+
+| 组件 | 作用 |
+|---|---|
+| `keepalive/KeepAliveService` | 前台服务，`START_STICKY` + `stopWithTask=false`，常驻通知（IMPORTANCE_MIN，不出声） |
+| `keepalive/BootReceiver` | 开机自启（`BOOT_COMPLETED` / `MY_PACKAGE_REPLACED` / `QUICKBOOT_POWERON`），已登录则拉起服务 |
+| `bot/BotRuntime` | 进程级运行时：持有后台连接；界面在时让位（`uiAttached`），界面销毁后 5s 内接管 |
+| `bot/BackgroundSink` | 后台只落库：会话 + 未读 + 成员学习，不依赖任何界面对象 |
+
+关键设计（为什么必须这样）：
+- 连接若由 `MainViewModel` 独占，Activity 被划掉 → ViewModel 清理 → socket 关闭 → 收不到消息；
+- 所以把连接所有权下放前台服务：服务自己在后台连、自己落库（`BackgroundSink`）；
+- 界面回来后 `attachUi()`，看护循环断开后台连接，避免**双 WebSocket**；
+- `onCleared()` 里让位并关闭界面自己的连接，数秒内由服务重连。
+
+**未做（按你要求）**：@ 提醒 / 消息通知。常驻通知只是前台服务的系统硬性要求，
+渠道重要性设为 `IMPORTANCE_MIN`，不出声、不弹窗。
+如需真正的消息通知，再加 channel + `NotificationCompat` 即可。
+
 ## 四、待做的事（逐层对比清单）
 
 对每一层，打开对应 QQ 类 → 找到真实行为 → 打开本项目实现 → 比对差异 → 修正 → 记录结论。

@@ -66,6 +66,12 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent { QQApp() }
+        // 有已登录账号就启动后台保活（前台服务）
+        com.qqbot.client.data.StorageManager(this).let { sm ->
+            if (sm.loadAccounts().isNotEmpty()) {
+                com.qqbot.client.keepalive.KeepAliveService.start(this)
+            }
+        }
     }
 }
 
@@ -203,6 +209,8 @@ private fun QQAppContent(vm: MainViewModel = viewModel(), state: com.qqbot.clien
                             showAddBot = false
                             addError = null
                             tab = QQTab.MESSAGE
+                            // 登录成功即启动后台保活
+                            com.qqbot.client.keepalive.KeepAliveService.start(context)
                         }
                         is AddBotResult.Failure -> addError = result.message
                     }
@@ -460,7 +468,12 @@ private fun QQAppContent(vm: MainViewModel = viewModel(), state: com.qqbot.clien
                     },
                     onAddBot = { showAddBot = true; addError = null },
                     onSwitch = { vm.switchAccount(it) },
-                    onLogout = { vm.logout(it) },
+                    onLogout = {
+                        vm.logout(it)
+                        // 退出登录后不需要再保活
+                        com.qqbot.client.keepalive.KeepAliveService.stop(context)
+                        com.qqbot.client.bot.BotRuntime.stopBackground()
+                    },
                     onClearNameCache = { vm.clearNameCache() },
                     fontLevel = state.fontLevel,
                     onFontLevelChange = { vm.setFontLevel(it) },

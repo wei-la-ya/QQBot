@@ -203,6 +203,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // ==================== 启动机器人 ====================
 
     private fun startBot(account: BotAccount) {
+        // 界面自己持有连接期间，后台保活服务不要重复连
+        com.qqbot.client.bot.BotRuntime.attachUi()
         gateway?.close()
         // 优先用账号里的 openid，其次用之前从 mentions 学到的缓存
         botOpenId = account.botOpenId.ifEmpty { storage.selfOpenId(account.appId) }
@@ -1302,7 +1304,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() {
         super.onCleared()
+        // 关键：界面销毁（划掉任务卡）时**不要关连接**。
+        // 交给前台保活服务接管，继续在后台收消息并落库；
+        // 重新打开界面时 startBot() 会重新 attach 并自建连接。
+        com.qqbot.client.bot.BotRuntime.detachUi()
+        // 关掉界面自己的连接：所有权交回后台服务，看护循环会在数秒内重连。
+        // 不这么做会出现「界面连接 + 后台连接」两条 WebSocket。
         gateway?.close()
+        gateway = null
+        apiClient = null
     }
 
     companion object {
