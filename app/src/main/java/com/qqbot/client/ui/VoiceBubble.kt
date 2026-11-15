@@ -102,9 +102,18 @@ fun VoiceBubble(seg: MessageSegment, self: Boolean) {
         }
     }
 
-    // 预取 WAV：拿真实时长，点播放时不用等
+    // 播放源：优先 voice_wav_url（服务端解码出的未压缩 PCM，平台可播）；
+    // url 是 SILK，Android 没有 SILK 解码器，只有当它本身是平台可解码容器时才退回使用。
+    fun pickSource(): String {
+        if (seg.voiceWavUrl.isNotEmpty()) return seg.voiceWavUrl
+        val cached = VoiceCache.findCached(context, seg.url)
+        if (cached != null && VoiceCache.isPlayableByPlatform(cached)) return seg.url
+        return seg.voiceWavUrl.ifEmpty { seg.url }
+    }
+
+    // 预取：拿真实时长，点播放时不用等
     LaunchedEffect(seg.url) {
-        val src = seg.voiceWavUrl.ifEmpty { seg.url }
+        val src = pickSource()
         if (src.isEmpty()) return@LaunchedEffect
         val f = VoiceCache.fetch(context, src)
         if (f != null && durationMs <= 0) {
@@ -132,7 +141,8 @@ fun VoiceBubble(seg: MessageSegment, self: Boolean) {
 
     val seconds = when {
         durationMs > 0 -> ((durationMs + 999) / 1000).toInt().coerceAtLeast(1)
-        seg.sizeBytes > 0 -> (VoiceCache.estimateMsBySize(seg.sizeBytes) / 1000).toInt().coerceAtLeast(1)
+        // 兜底：没有时长时按实测 SILK 码率粗估（12.5kbps ≈ 1562 字节/秒）
+        seg.sizeBytes > 0 -> (seg.sizeBytes / 1562).toInt().coerceAtLeast(1)
         else -> 1
     }
     val label = "$seconds''"
@@ -161,9 +171,13 @@ fun VoiceBubble(seg: MessageSegment, self: Boolean) {
                     else -> {
                         loading = true
                         scope.launch {
-                            val f = VoiceCache.fetch(context, seg.voiceWavUrl.ifEmpty { seg.url })
+                            val f = VoiceCache.fetch(context, pickSource())
                             loading = false
-                            if (f == null) errorText = "语音下载失败" else startPlay(f)
+                            when {
+                                f == null -> errorText = "语音下载失败"
+                                !VoiceCache.isPlayableByPlatform(f) -> errorText = "该语音格式系统无法解码"
+                                else -> startPlay(f)
+                            }
                         }
                     }
                 }
