@@ -23,6 +23,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -33,6 +34,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -66,9 +69,30 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+/**
+ * 根组合：按「字体大小」档位整体缩放。
+ *
+ * 用覆盖 LocalDensity 的方式，让 **dp 与 sp 一起缩放**，
+ * 因此文字、气泡、图片、头像都会同步变大/变小（同 QQ 字体大小设置后的观感）。
+ *
+ * 档位名称取自 QQ 资源字符串（小/较小/标准/较大/大/超大/最大 共 7 档）；
+ * 每档倍率未从 QQ 取证，见 FontLevel 注释。
+ */
 @Composable
 private fun QQApp(vm: MainViewModel = viewModel()) {
     val state by vm.state.collectAsState()
+    val base = LocalDensity.current
+    val factor = com.qqbot.client.data.FontLevel.of(state.fontLevel).factor
+    val scaledDensity = remember(base, factor) {
+        Density(density = base.density * factor, fontScale = base.fontScale)
+    }
+    CompositionLocalProvider(LocalDensity provides scaledDensity) {
+        QQAppContent(vm = vm, state = state)
+    }
+}
+
+@Composable
+private fun QQAppContent(vm: MainViewModel = viewModel(), state: com.qqbot.client.vm.UiState) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -438,6 +462,8 @@ private fun QQApp(vm: MainViewModel = viewModel()) {
                     onSwitch = { vm.switchAccount(it) },
                     onLogout = { vm.logout(it) },
                     onClearNameCache = { vm.clearNameCache() },
+                    fontLevel = state.fontLevel,
+                    onFontLevelChange = { vm.setFontLevel(it) },
                 )
             }
         }

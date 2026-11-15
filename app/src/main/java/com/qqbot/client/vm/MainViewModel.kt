@@ -65,6 +65,8 @@ data class UiState(
     val botIsAdmin: Boolean = false,
     /** 相册展示模式：half / full */
     val albumMode: String = "half",
+    /** 聊天字号档位 0..6（小…最大），见 FontLevel */
+    val fontLevel: Int = 2,
 ) {
     val totalUnread: Int get() = conversations.sumOf { it.unread }
     val pinned: List<Conversation> get() = conversations.filter { it.pinned }
@@ -97,6 +99,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 accounts = accounts,
                 currentAccount = current,
                 albumMode = storage.albumMode(),
+            fontLevel = storage.fontLevel(),
                 markdownMode = current?.let { a -> storage.markdownEnabled(a.appId) } ?: false,
             )
         }
@@ -648,6 +651,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** 切换相册展示方式（半屏 / 全屏），持久化到偏好 */
+    /** 设置聊天字号档位并持久化 */
+    fun setFontLevel(index: Int) {
+        val v = index.coerceIn(0, 6)
+        storage.setFontLevel(v)
+        _state.update { it.copy(fontLevel = v) }
+    }
+
     fun setAlbumMode(mode: String) {
         storage.setAlbumMode(mode)
         _state.update { it.copy(albumMode = mode) }

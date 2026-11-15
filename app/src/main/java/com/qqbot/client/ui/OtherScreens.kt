@@ -171,6 +171,9 @@ fun MeScreen(
     onCopyOpenId: (String) -> Unit = {},
     /** 清昵称缓存（不动消息/图片） */
     onClearNameCache: () -> Unit = {},
+    /** 聊天字号档位 0..6（QQ 的小/较小/标准/较大/大/超大/最大） */
+    fontLevel: Int = 2,
+    onFontLevelChange: (Int) -> Unit = {},
     onAddBot: () -> Unit,
     onSwitch: (String) -> Unit,
     onLogout: (String) -> Unit,
@@ -216,6 +219,59 @@ fun MeScreen(
             }
             StatusDot(gateway)
         }
+        // 字体大小：档位名与 QQ 资源一致（小/较小/标准/较大/大/超大/最大）
+        var showFontDialog by remember { mutableStateOf(false) }
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable { showFontDialog = true }
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("字体大小", fontSize = 14.sp, color = QQ.TextPrimary)
+            Spacer(Modifier.weight(1f))
+            Text(
+                com.qqbot.client.data.FontLevel.of(fontLevel).label,
+                fontSize = 13.sp,
+                color = QQ.TextSecondary,
+            )
+        }
+        Divider(color = QQ.Divider, thickness = 0.5.dp, modifier = Modifier.padding(start = 16.dp))
+        if (showFontDialog) {
+            androidx.compose.ui.window.Dialog(onDismissRequest = { showFontDialog = false }) {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color.White)
+                        .padding(vertical = 8.dp),
+                ) {
+                    com.qqbot.client.data.FontLevel.entries.forEachIndexed { idx, level ->
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    onFontLevelChange(idx)
+                                    showFontDialog = false
+                                }
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                level.label,
+                                fontSize = 15.sp,
+                                color = if (idx == fontLevel) QQ.Blue else QQ.TextPrimary,
+                            )
+                            Spacer(Modifier.weight(1f))
+                            if (idx == fontLevel) {
+                                Text("✓", fontSize = 15.sp, color = QQ.Blue)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // 昵称缓存清理：别人改了昵称但本地还显示旧名时用这个
         Row(
             Modifier
