@@ -631,20 +631,39 @@ UI：卡片（标题「聊天记录」+ 最多 4 行预览 + 「查看N条消息
 入口：「我的」页 → 字体大小 → 7 档选择。
 持久化：`StorageManager.fontLevel()` / `setFontLevel()`（prefs，默认 标准）。
 
-### 3.11 合并转发卡片：**样式未取证**（如实记录）
+### 3.11 合并转发卡片：QQ 是用 **ARK** 渲染的（已翻全 42 个 dex 确认）
 
-当前 `ForwardCard` / `ForwardDetailDialog` 的样式（标题「聊天记录」+ 4 行预览 +
-「查看N条消息」+ 明细弹层）是**按官方字段语义自拟的，没有核对 QQ 的布局与尺寸**。
+翻遍全部 42 个 dex 后的定位路径（记录方法，方便后续复用）：
 
-已尝试但未取到：
-- 资源里 `layout/` 下没有 `multiforward` / `multi_forward` / `forward_msg` 一类命名
-  （QQ 资源已混淆成 `r/i/xxx.xml`）；
-- 用「含 `PttAudioPlayView` 的布局」这种反查方式能找到语音相关布局，
-  但转发卡片对应的 ViewBinding 类尚未定位；
-- `classes3.dex` 反编译后只有 `aio/helper/MultiForwardHelper`（那是**多选后转发**的发送侧逻辑），
-  没有渲染卡片的内容组件。
+1. 扫全量 dex 找类名线索 → `ForwardMsgItem` 在 `classes13.dex`，
+   `component/fold` 包在 **`classes12.dex`**；
+2. 反编译 `classes12.dex` → 命中
+   `com/tencent/mobileqq/aio/msglist/holder/component/fold/AIOFoldContentComponent.java`
+   （30KB，`extends BaseContentComponent<FoldMsgItem>`）；
+3. 该组件里 inflate 的是 `ArkAppLoadLayout`，日志原文写着
+   **`"fold msg handled by ark"`** —— 即气泡内部由 ARK 应用渲染，不是静态 XML；
+4. 它 inflate 的布局 id = `2131559071` = `layout/cgh`（`r/i/cgh.xml`），dump 出来：
 
-结论：这一块**待取证后再改**，不能按现在的自拟样式当成"已对齐 QQ"。
+```
+ArkAppLoadLayout   id/0x7f0a46a2   layout_width=263dp  layout_height=294dp
+└ LinearLayout（竖向, gravity=center, layout_centerInParent）
+  ├ ImageView  id/0x7f0a46a1  28dp × 28dp      ← 加载/异常图标
+  └ TextView   id/0x7f0a46b5  12sp, textColor=0x7f060383  ← 文案（"消息异常" 0x7f120729）
+```
+
+5. 再查 ARK 应用包是否随 APK 下发：扫 `assets/` 里含 `multiforward / foldmsg / fold_msg` 的条目
+   → **0 命中**，说明该 ARK 应用是运行时下发的，APK 内没有其内容布局。
+
+**结论（可据实复刻的部分 vs 不可能复刻的部分）**
+
+| 项 | 结论 |
+|---|---|
+| 卡片外框尺寸 | **263dp × 294dp**（`layout/cgh` 实测，已照此改本项目的 `ForwardCard` 宽度） |
+| 加载/异常占位 | 28dp 图标 + 12sp 文案，失败文案「消息异常」 |
+| 卡片内部排版（标题、每行预览、圆角、配色） | ❌ 由运行时下发的 ARK 应用绘制，**APK 内不存在**，无法逐像素复刻 |
+
+因此本项目现在的做法：宽度对齐 263dp、用文本预览填充内容（QQ 那 294dp 高度是给 ARK 内容的），
+并在代码注释里写明「内层 ARK 无法复刻」，**不冒称已与 QQ 像素级一致**。
 
 ## 四、待做的事（逐层对比清单）
 

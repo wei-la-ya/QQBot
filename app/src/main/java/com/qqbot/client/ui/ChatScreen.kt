@@ -1011,7 +1011,10 @@ private fun ForwardCard(msg: ChatMessage, self: Boolean, onOpen: () -> Unit) {
     val total = nodes.sumOf { it.totalCount }
     Column(
         Modifier
-            .widthIn(max = 240.dp)
+            // 宽度取自 QQ：合并转发气泡是 ArkAppLoadLayout（layout/cgh），固定 263dp × 294dp。
+            // 内层由 ARK 应用运行时渲染（APK 里没有该应用包），我们只能用文本预览填充，
+            // 所以高度随内容、宽度对齐 263dp。
+            .width(263.dp)
             .clip(RoundedCornerShape(QQ.BubbleCorner))
             .background(if (self) QQ.SelfBubble else QQ.OtherBubble)
             .clickable { onOpen() }
@@ -1024,7 +1027,7 @@ private fun ForwardCard(msg: ChatMessage, self: Boolean, onOpen: () -> Unit) {
             color = if (self) Color.White else QQ.TextPrimary,
         )
         Spacer(Modifier.height(6.dp))
-        nodes.take(4).forEach { n ->
+        nodes.take(6).forEach { n ->
             val line = if (n.children.isNotEmpty() && n.content.isEmpty()) {
                 "聊天记录"
             } else if (n.authorName.isNotEmpty()) {
