@@ -1,5 +1,6 @@
 package com.qqbot.client.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
@@ -12,14 +13,18 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -39,20 +44,25 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -80,6 +90,7 @@ import kotlinx.coroutines.launch
  *  - 输入框输入 @ → 向上弹出成员候选列表（左头像右昵称），选中后蓝色高亮
  *  - 上滑自动加载更早消息，下滑回到底部
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ChatScreen(
     conversation: Conversation,
@@ -152,33 +163,137 @@ fun ChatScreen(
         }
     }
     var quote by remember(conversation.chatKey) { mutableStateOf<ChatMessage?>(null) }
-    var showPlus by remember { mutableStateOf(false) }
-    // 表情面板状态提升到这里，才能和键盘/加号面板统一做互斥
-    var showEmoji by remember { mutableStateOf(false) }
     // 合并转发明细弹层
     var forwardView by remember { mutableStateOf<List<MsgNode>?>(null) }
-    val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
-    // 统一收起：键盘 + 加号面板 + 表情面板 + 相册。QQ 里点聊天区就是全收
-    val dismissPanels: () -> Unit = {
-        keyboard?.hide()
-        showPlus = false
-        showEmoji = false
-        if (albumVisible) onCloseAlbum()
-    }
     var menuFor by remember { mutableStateOf<ChatMessage?>(null) }
     var showMemberPicker by remember { mutableStateOf(false) }
     // 待发送的附件：由外部（相册）持有，这里只读
     val pendingAttachments = attachments
     val scope = rememberCoroutineScope()
     val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
+    val density = LocalDensity.current
+    // 「再点一次面板按钮 = 回到键盘」时用来把焦点要回输入框
+    val inputFocus = remember { FocusRequester() }
 
     val listState = rememberLazyListState()
+
+    // ===== 底部面板槽位：键盘 / 表情 / 加号 / 相册 共用，同一时刻只有一个（QQ HideKeyBoardAndPanel）=====
+    var panel by remember(conversation.chatKey) { mutableStateOf(ChatPanelKind.NONE) }
+    // 相册由外部打开（权限流程在 MainActivity），一旦可见就占用槽位
+    val shownPanel = if (albumVisible) ChatPanelKind.ALBUM else panel
+
+    // 槽位高度 = max(实测键盘高度, 280dp)（panelcontainer.j#w()），
+    // 这样从键盘切面板时高度完全一致，聊天区不会跳。
+    // 屏幕很矮（分屏 / 小屏）时再按 55% 屏高兜一刀，避免把聊天区挤成 0。
+    val imePx = WindowInsets.ime.getBottom(density)
+    var keyboardPx by remember { mutableIntStateOf(0) }
+    LaunchedEffect(imePx) { if (imePx > keyboardPx) keyboardPx = imePx }
+    val screenHeightDp = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.dp
+    val maxPanelHeight = screenHeightDp * 0.55f
+    val panelHeight = minOf(
+        maxOf(with(density) { keyboardPx.toDp() }, ChatPanelSpec.MinHeight),
+        maxPanelHeight,
+    )
 
     val atBottom by remember {
         derivedStateOf {
             val info = listState.layoutInfo
             val last = info.visibleItemsInfo.lastOrNull() ?: return@derivedStateOf true
             last.index >= info.totalItemsCount - 2
+        }
+    }
+
+    /**
+     * 面板 / 键盘开合会改变聊天区高度。QQ 里聊天列表是「贴底」的：
+     * 输入区变高时最新的消息仍然露在输入栏上方，而不是被面板盖掉。
+     * 所以只要打开或关闭时本来就贴着底部，就在新高度生效后重新贴底。
+     */
+    val stickScrollIfAtBottom: () -> Unit = {
+        if (atBottom) {
+            scope.launch {
+                withFrameNanos { }   // 让面板进入组合
+                withFrameNanos { }   // 让新高度完成测量
+                listState.scrollToItem((listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0))
+            }
+        }
+    }
+
+    /**
+     * 收起键盘 + 关掉所有面板。QQ 里「点聊天区空白处」和「按系统返回键」都是这个动作
+     * （`AIOMsgListEvent$HideKeyBoardAndPanel`）。
+     */
+    val closeAllPanels: () -> Unit = {
+        stickScrollIfAtBottom()
+        panel = ChatPanelKind.NONE
+        if (albumVisible) onCloseAlbum()
+        keyboard?.hide()
+        focusManager.clearFocus()
+    }
+
+    /**
+     * 打开 / 切换面板。**互斥**：先把键盘和其它面板全部收掉，槽位里永远只有一个面板。
+     * 再点同一个按钮 = 收起面板并回到键盘输入（QQ 里此时按钮图标已经切成键盘图标）。
+     */
+    val togglePanel: (ChatPanelKind) -> Unit = { kind ->
+        stickScrollIfAtBottom()
+        if (shownPanel == kind) {
+            panel = ChatPanelKind.NONE
+            if (albumVisible) onCloseAlbum()
+            keyboard?.hide()
+            runCatching { inputFocus.requestFocus() }
+        } else {
+            panel = kind
+            if (albumVisible) onCloseAlbum()
+            focusManager.clearFocus()
+            keyboard?.hide()
+        }
+    }
+
+    // 相册（由 MainActivity 走权限流程后打开）一来就抢槽位：关掉表情/加号面板并收键盘
+    LaunchedEffect(albumVisible) {
+        if (albumVisible) {
+            stickScrollIfAtBottom()
+            panel = ChatPanelKind.NONE
+            focusManager.clearFocus()
+            keyboard?.hide()
+        }
+    }
+
+    // 系统返回键：有面板时先关面板，不要直接退出群聊（QQ 同行为）；
+    // 只有键盘时也是先收键盘，第二次才是退出聊天。
+    val imeVisible = WindowInsets.isImeVisible
+    BackHandler(enabled = shownPanel != ChatPanelKind.NONE || imeVisible) {
+        if (shownPanel != ChatPanelKind.NONE) {
+            closeAllPanels()
+        } else {
+            keyboard?.hide()
+            focusManager.clearFocus()
+        }
+    }
+
+    // 与 QQ 一致：@全体成员 直接以标签插入输入框
+    val insertAtEveryone: () -> Unit = {
+        draft = if (draft.isEmpty() || draft.endsWith(" ") || draft.endsWith("\n")) {
+            "$draft@全体成员 "
+        } else {
+            "$draft @全体成员 "
+        }
+    }
+    // 表情面板：点小黄脸插入 QQ 表情标记，普通 emoji 直接插字符
+    val insertFace: (String, Int) -> Unit = { c, code ->
+        draft = if (code > 0) draft + QqFaces.insertTag(code, c) else draft + c
+    }
+    // 面板删除键：整体删掉一个表情标签，否则回退一个字符（与 QQ 面板删除键一致）
+    val deleteFace: () -> Unit = {
+        val tagEnd = draft.lastIndexOf('>')
+        val tagStart = draft.lastIndexOf("<faceType=")
+        draft = when {
+            tagStart >= 0 && tagEnd > tagStart && tagEnd == draft.length - 1 ->
+                draft.substring(0, tagStart)
+            draft.isNotEmpty() -> draft.dropLast(1)
+            else -> draft
         }
     }
 
@@ -250,13 +365,13 @@ fun ChatScreen(
             )
         }
 
-        // ===== 消息列表（相册打开且为半屏时，聊天区与相册各占一半：weight 1:1）=====
+        // ===== 消息列表（占满输入区以外的空间；面板打开时它变矮，但最新消息仍贴着输入栏）=====
         Box(
             Modifier
                 .weight(1f)
                 // 与 QQ 一致：点击聊天区域收起键盘、关闭表情/加号面板与相册
                 .pointerInput(Unit) {
-                    detectTapGestures(onTap = { dismissPanels() })
+                    detectTapGestures(onTap = { closeAllPanels() })
                 }
         ) {
             LazyColumn(
@@ -304,7 +419,7 @@ fun ChatScreen(
                             selfName = account?.botName ?: "",
                             highlighted = msg.id == highlightMsgId,
                             onLongPress = { if (!msg.recalled) menuFor = msg },
-                            onClick = { dismissPanels() },
+                            onClick = { closeAllPanels() },
                             onOpenForward = { nodes -> forwardView = nodes },
                             onAvatarClick = {
                                 if (!msg.isSelf && conversation.isGroup) {
@@ -393,26 +508,18 @@ fun ChatScreen(
             onDraftChange = { draft = it },
             members = members,
             appId = account?.appId ?: "",
-            showPlus = showPlus,
-            showEmoji = showEmoji,
-            onShowEmojiChange = { showEmoji = it },
-            onToast = onToast,
-            // 与 QQ 一致：表情/加号面板和键盘互斥，开面板先收键盘
-            onTogglePlus = {
-                val next = !showPlus
-                showPlus = next
-                if (next) {
-                    keyboard?.hide()
+            // 当前占了槽位的面板（用来把「表情/加号」按钮切成键盘图标）
+            activePanel = shownPanel,
+            onTogglePanel = togglePanel,
+            focusRequester = inputFocus,
+            // 输入框拿到焦点 = 键盘要上来了：把相册/表情/加号面板全收掉（QQ 的互斥核心）
+            onInputFocused = {
+                if (panel != ChatPanelKind.NONE || albumVisible) {
+                    stickScrollIfAtBottom()
+                    panel = ChatPanelKind.NONE
                     if (albumVisible) onCloseAlbum()
                 }
             },
-            // 点击输入框：收起面板与相册，让键盘上来
-            onInputFocused = {
-                if (showPlus) showPlus = false
-                if (showEmoji) showEmoji = false
-                if (albumVisible) onCloseAlbum()
-            },
-            onRequestClosePlus = { showPlus = false },
             onSend = {
                 // 输入框里只要还有内容（文字 / @ / 附件）就可以发
                 if (draft.isNotBlank() || pendingAttachments.isNotEmpty()) {
@@ -432,35 +539,77 @@ fun ChatScreen(
                     quote = null
                 }
             },
+            // 相册：先收掉其它面板与键盘（互斥），再交给外部（外部还要过存储权限）
             onPickImage = {
-                showPlus = false
+                stickScrollIfAtBottom()
+                panel = ChatPanelKind.NONE
                 keyboard?.hide()
+                focusManager.clearFocus()
                 onOpenAlbum(false)
             },
             onPickVideo = {
-                showPlus = false
+                stickScrollIfAtBottom()
+                panel = ChatPanelKind.NONE
                 keyboard?.hide()
+                focusManager.clearFocus()
                 onOpenAlbum(true)
             },
             // 相机不涉及面板，直接收起键盘
-            onPickCamera = { showPlus = false; keyboard?.hide(); onPickCamera() },
-            // 与 QQ 一致：@全体成员 直接以标签插入输入框
-            onAtEveryone = {
-                draft = if (draft.isEmpty() || draft.endsWith(" ") || draft.endsWith("\n")) {
-                    "$draft@全体成员 "
-                } else {
-                    "$draft @全体成员 "
-                }
+            onPickCamera = {
+                panel = ChatPanelKind.NONE
+                keyboard?.hide()
+                focusManager.clearFocus()
+                onPickCamera()
             },
+            onAtEveryone = insertAtEveryone,
             attachments = pendingAttachments,
             onRemoveAttachment = { uri -> onAttachmentsChange(pendingAttachments.filter { it != uri }) },
         )
 
-        // ===== 相册面板（半屏时与聊天区各占一半高度，全屏时铺满）=====
-        if (albumVisible) {
-            if (albumMode == AlbumMode.HALF) {
-                // 同列兄弟节点：聊天区 weight=1，相册 weight=1 → 上半聊天、下半相册
-                Box(Modifier.weight(1f)) {
+        // ===== 底部面板槽位：表情 / 加号 / 相册（半屏）共用同一块空间，同一时刻只有一个 =====
+        // 高度 = max(键盘高度, 280dp)，与 QQ 的 panelcontainer 一致；
+        // 它占真实布局空间（不是盖在聊天区上），所以聊天区会自动变矮而不是被遮挡。
+        when (shownPanel) {
+            ChatPanelKind.EMOJI -> EmojiPanel(
+                visible = true,
+                modifier = Modifier.fillMaxWidth().height(panelHeight),
+                onPick = insertFace,
+                onToast = onToast,
+                onDelete = deleteFace,
+            )
+
+            ChatPanelKind.PLUS -> ChatPlusPanel(
+                modifier = Modifier.fillMaxWidth().height(panelHeight),
+                onAlbum = {
+                    stickScrollIfAtBottom()
+                    panel = ChatPanelKind.NONE
+                    keyboard?.hide()
+                    focusManager.clearFocus()
+                    onOpenAlbum(false)
+                },
+                onCamera = {
+                    panel = ChatPanelKind.NONE
+                    keyboard?.hide()
+                    focusManager.clearFocus()
+                    onPickCamera()
+                },
+                onVideo = {
+                    stickScrollIfAtBottom()
+                    panel = ChatPanelKind.NONE
+                    keyboard?.hide()
+                    focusManager.clearFocus()
+                    onOpenAlbum(true)
+                },
+                onAtEveryone = {
+                    insertAtEveryone()
+                    panel = ChatPanelKind.NONE
+                    runCatching { inputFocus.requestFocus() }
+                },
+            )
+
+            // 半屏相册：占槽位；全屏相册走下面的覆盖层
+            ChatPanelKind.ALBUM -> if (albumMode == AlbumMode.HALF) {
+                Box(Modifier.fillMaxWidth().height(panelHeight)) {
                     AlbumPanel(
                         visible = true,
                         mode = AlbumMode.HALF,
@@ -476,9 +625,9 @@ fun ChatScreen(
                         onToast = onAlbumToast,
                     )
                 }
-            } else {
-                // 全屏相册不参与列布局，改为覆盖在聊天页之上（见下方 Box）
             }
+
+            ChatPanelKind.NONE -> Unit
         }
     }
 
@@ -803,15 +952,13 @@ private fun ChatInputBar(
     onDraftChange: (String) -> Unit,
     members: List<GroupMember>,
     appId: String,
-    showPlus: Boolean,
-    onTogglePlus: () -> Unit,
-    /** 表情面板由父级持有，保证与键盘/加号面板互斥 */
-    showEmoji: Boolean = false,
-    onShowEmojiChange: (Boolean) -> Unit = {},
-    onToast: (String) -> Unit = {},
+    /** 当前占用底部槽位的面板；键盘态 = NONE。只用来把按钮切成键盘图标。 */
+    activePanel: ChatPanelKind,
+    /** 点表情 / 加号按钮：由上层统一做「关键盘 + 关其它面板」的互斥 */
+    onTogglePanel: (ChatPanelKind) -> Unit,
+    focusRequester: FocusRequester,
+    /** 输入框拿到焦点（键盘要出来了）—— 上层据此关掉相册/表情/加号面板 */
     onInputFocused: () -> Unit = {},
-    /** 请求上层关闭加号面板（表情面板打开时互斥） */
-    onRequestClosePlus: () -> Unit = {},
     onSend: () -> Unit,
     onPickImage: () -> Unit,
     onPickVideo: () -> Unit,
@@ -820,8 +967,6 @@ private fun ChatInputBar(
     attachments: List<android.net.Uri> = emptyList(),
     onRemoveAttachment: (android.net.Uri) -> Unit = {},
 ) {
-    // 表情面板开关（与键盘、加号面板互斥）
-    val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
     Column(Modifier.fillMaxWidth().background(Color(0xFFF7F7F9))) {
         // 待发送图片预览（图文混发）
         if (attachments.isNotEmpty()) {
@@ -857,15 +1002,7 @@ private fun ChatInputBar(
             Box(
                 Modifier.weight(1f).heightIn(min = 38.dp, max = 140.dp)
                     .clip(RoundedCornerShape(6.dp)).background(Color.White)
-                    .padding(horizontal = 10.dp, vertical = 9.dp)
-                    // 输入框获得焦点（键盘弹出）时，关闭表情/加号面板与相册
-                    .onFocusChanged { st ->
-                        if (st.isFocused) {
-                            onInputFocused()
-                            // 键盘与表情面板同一槽位：聚焦即收面板
-                            onShowEmojiChange(false)
-                        }
-                    },
+                    .padding(horizontal = 10.dp, vertical = 9.dp),
             ) {
                 MentionTextField(
                     value = draft,
@@ -874,6 +1011,13 @@ private fun ChatInputBar(
                     appId = appId,
                     placeholder = "输入消息",
                     modifier = Modifier.fillMaxWidth(),
+                    // 焦点判断加在真正的输入控件上：拿到焦点 = 键盘要出来了。
+                    // 上层据此把相册/表情/加号面板全收掉 —— 这是 QQ 的互斥核心，
+                    // 也是以前「键盘起来了面板却没关」的根因（旧代码在父 Box 上用 isFocused，
+                    // 焦点其实在内部的 BasicTextField 上，父节点永远收不到 isFocused=true）。
+                    fieldModifier = Modifier
+                        .focusRequester(focusRequester)
+                        .onFocusChanged { st -> if (st.isFocused) onInputFocused() },
                     onPickEveryone = onAtEveryone,
                 )
             }
@@ -899,72 +1043,52 @@ private fun ChatInputBar(
             InputIcon(R.drawable.qui_image_aio_oversized, "图片") { onPickImage() }
             InputIcon(R.drawable.qui_camera_aio_oversized, "相机") { onPickCamera() }
             InputIcon(
-                // 与 QQ 一致：面板展开时图标切换为键盘图标（skin_aio_keyboard_nor），
-                // 收起时恢复表情图标。QQ 输入栏是程序化构建，两个图标资源同时存在于 classes4.dex。
-                icon = if (showEmoji) R.drawable.skin_aio_keyboard_nor else R.drawable.qui_emoticon_aio_oversized,
-                label = if (showEmoji) "键盘" else "表情",
-                active = showEmoji,
-            ) {
-                val next = !showEmoji
-                onShowEmojiChange(next)
-                // 与 QQ 一致：表情面板与键盘/加号面板互斥
-                if (next) {
-                    keyboard?.hide()
-                    onRequestClosePlus()
-                }
-            }
+                // 与 QQ 一致：自己这块槽位被占用时图标切成键盘图标（skin_aio_keyboard_nor）
+                icon = if (activePanel == ChatPanelKind.EMOJI) R.drawable.skin_aio_keyboard_nor
+                else R.drawable.qui_emoticon_aio_oversized,
+                label = if (activePanel == ChatPanelKind.EMOJI) "键盘" else "表情",
+                active = activePanel == ChatPanelKind.EMOJI,
+            ) { onTogglePanel(ChatPanelKind.EMOJI) }
             Spacer(Modifier.weight(1f))
-            // 加号：更多发送方式
+            // 加号：更多发送方式（同样是双态图标）
             Box(
-                Modifier.size(36.dp).clickable { onTogglePlus() },
+                Modifier.size(36.dp).clickable { onTogglePanel(ChatPanelKind.PLUS) },
                 contentAlignment = Alignment.Center,
             ) {
                 Image(
                     painter = painterResource(
-                        // 与 QQ 一致：加号面板展开时也切成键盘图标
-                        if (showPlus) R.drawable.skin_aio_keyboard_nor else R.drawable.skin_aio_more_nor
+                        if (activePanel == ChatPanelKind.PLUS) R.drawable.skin_aio_keyboard_nor
+                        else R.drawable.skin_aio_more_nor
                     ),
-                    contentDescription = if (showPlus) "键盘" else "更多",
+                    contentDescription = if (activePanel == ChatPanelKind.PLUS) "键盘" else "更多",
                     modifier = Modifier.size(24.dp),
                 )
             }
         }
+    }
+}
 
-        if (showPlus) {
-            Row(
-                Modifier.fillMaxWidth().background(Color.White).padding(vertical = 16.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-            ) {
-                PlusItem("相册") { onPickImage() }
-                PlusItem("拍摄") { onPickCamera() }
-                PlusItem("视频") { onPickVideo() }
-                PlusItem("@全体") { onAtEveryone(); onTogglePlus() }
-            }
+/**
+ * 加号（更多）面板。
+ *
+ * QQ 里它和表情/相册面板**共用同一个槽位**，高度也是 max(键盘高度, 280dp)，
+ * 所以这里只负责在给定高度里排内容，不再自己定高。
+ */
+@Composable
+private fun ChatPlusPanel(
+    modifier: Modifier = Modifier,
+    onAlbum: () -> Unit,
+    onCamera: () -> Unit,
+    onVideo: () -> Unit,
+    onAtEveryone: () -> Unit,
+) {
+    Column(modifier.background(Color.White).padding(top = 24.dp, start = 16.dp, end = 16.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+            PlusItem(R.drawable.qui_image_aio_oversized, "相册", onAlbum)
+            PlusItem(R.drawable.qui_camera_aio_oversized, "拍摄", onCamera)
+            PlusItem(R.drawable.qui_gallery_aio_oversized, "视频", onVideo)
+            PlusItem(null, "@全体", onAtEveryone)
         }
-
-        // 表情面板：点表情插入到输入框
-        EmojiPanel(
-            visible = showEmoji,
-            onPick = { c, code ->
-                if (code > 0) {
-                    // QQ 小黄脸：插入对应的 QQ 表情标记，发送时转成官方语法
-                    onDraftChange(draft + QqFaces.insertTag(code, c))
-                } else {
-                    onDraftChange(draft + c)
-                }
-            },
-            onToast = onToast,
-            onDelete = {
-                // 与 QQ 面板的删除键一致：整体删除一个表情标签，否则回退一个字符
-                val tagEnd = draft.lastIndexOf('>')
-                val tagStart = draft.lastIndexOf("<faceType=")
-                if (tagStart >= 0 && tagEnd > tagStart && tagEnd == draft.length - 1) {
-                    onDraftChange(draft.substring(0, tagStart))
-                } else if (draft.isNotEmpty()) {
-                    onDraftChange(draft.dropLast(1))
-                }
-            },
-        )
     }
 }
 
@@ -988,12 +1112,21 @@ private fun InputIcon(icon: Int, label: String, active: Boolean = false, onClick
 }
 
 @Composable
-private fun PlusItem(label: String, onClick: () -> Unit) {
+private fun PlusItem(icon: Int?, label: String, onClick: () -> Unit) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier.clickable { onClick() }.padding(12.dp),
+        modifier = Modifier.clickable { onClick() }.padding(10.dp),
     ) {
-        Box(Modifier.size(52.dp).background(Color(0xFFF2F3F5), RoundedCornerShape(8.dp)))
+        Box(
+            Modifier.size(52.dp).clip(RoundedCornerShape(12.dp)).background(Color(0xFFF2F3F5)),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (icon != null) {
+                Image(painter = painterResource(icon), contentDescription = null, modifier = Modifier.size(26.dp))
+            } else {
+                Text("@", fontSize = 20.sp, color = QQ.TextSecondary)
+            }
+        }
         Spacer(Modifier.height(6.dp))
         Text(label, fontSize = 12.sp, color = QQ.TextSecondary)
     }

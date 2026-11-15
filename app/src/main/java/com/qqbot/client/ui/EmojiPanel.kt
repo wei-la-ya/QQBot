@@ -85,7 +85,9 @@ fun EmojiPanel(
     Column(
         modifier
             .fillMaxWidth()
-            .height((EmoticonPanelSpec.CONTENT_HEIGHT_DP + EmoticonPanelSpec.BOTTOM_BAR_HEIGHT_DP).dp)
+            // 高度由面板槽位给（= max(键盘高度, 280dp)，与 QQ 的 panelcontainer 一致），
+            // 内容区自己不再写死高度，否则和键盘高度对不上，切面板时聊天区会跳。
+            .fillMaxSize()
             .background(Color.White)
     ) {
         // ===== 内容区：竖向滚动网格 =====

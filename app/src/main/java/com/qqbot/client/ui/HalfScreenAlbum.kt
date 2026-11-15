@@ -35,7 +35,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -43,6 +42,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntOffset
@@ -65,6 +65,10 @@ data class AlbumItem(
     val durationMs: Long = 0,
     /** 文件大小，字节；用于底栏「原图 (999K)」显示 */
     val size: Long = 0,
+    /** 原始像素宽（MediaStore 的 WIDTH），用于算缩略图宽度 */
+    val widthPx: Int = 0,
+    /** 原始像素高（MediaStore 的 HEIGHT） */
+    val heightPx: Int = 0,
 )
 
 /** 相册展示模式（在设置里选择） */
@@ -74,19 +78,22 @@ enum class AlbumMode(val label: String, val desc: String) {
 }
 
 /**
- * 相册面板 —— 逐项对齐 QQ 9.3.85 `com.tencent.mobileqq.aio.panel.photo` 的反编译结果。
+ * 相册面板 —— 逐项对齐 QQ 9.3.85 `com.tencent.mobileqq.aio.panel.photo`。
  *
- * 依据（详见 docs/QQ-对比交接文档.md 3.1.2 / 3.1.4 / 3.1.6）：
- *  - 面板布局 = `layout/ez5`（ViewBinding `xu1.an`），底栏是
- *    「相册 / 编辑 / ☑原图 (999K) / 发送」，**没有「取消」和标题**
- *  - item 布局 = `layout/ez3`（ViewBinding `xu1.al`）：
- *    图片左右各 2dp 外边距、**无圆角**、右上角 20dp 方形 CheckBox 显示序号、
- *    选中时整图盖 `#33000000`、视频右下角时长胶囊、已编辑左下角角标
+ * 依据（详见 docs/QQ-对比交接文档.md 3.1.2 / 3.1.4 / 3.1.6 / 3.13）：
+ *  - 面板布局 = `layout/ez5`：内容区（RecyclerView）+ 底栏，
+ *    底栏是「相册 / 编辑 / ☑原图 (999K) / 发送」，`minHeight=60dp`、
+ *    `paddingTop=11dp`、`paddingStart/End=17dp`（XML 原值；旧的「25dp」是 TouchDelegate 误读）
+ *  - 面板**高度不自己设**：由输入区面板容器统一给
+ *    `max(键盘高度, 280dp)`（`panelcontainer.j#w()`），见 [ChatPanelSpec]
  *  - 滚动方向 = `LinearLayoutManager(ctx, 0, false)` → 横向单行
- *  - 单张铺满 / 多张 158dp（`PhotoPanelAdapter.f0()`）
- *  - 滑出发送 = `ItemSwipeSendDecoration`，**只认竖向**，阈值
- *    `abs(dy) > recyclerHeight * dy / itemHeight`，飞出 300ms
+ *  - item 布局 = `layout/ez3`：图片左右各 2dp 外边距、**无圆角**、
+ *    **宽度 = 图片宽高比 × item 高，夹在 50dp~300dp**（`adjustViewBounds=true`
+ *    + `maxWidth=300dp` + `minWidth=50dp`，parent 为 wrap_content，
+ *    所以 MATCH_PARENT 的子 View 拿到的是 AT_MOST，ImageView 自适宽 → 整张图完整显示），
+ *    右上角 24dp 圆形 CheckBox 显示序号，选中时整图盖 `#33000000`
  *  - 点击图片打开全屏预览，**勾选只能点右上角 CheckBox**
+ *  - 滑出发送 = `ItemSwipeSendDecoration`，**只认竖向**，阈值 `abs(dy) > 条高 × 按下Y / 条目高`，飞出 300ms
  */
 @Composable
 fun AlbumPanel(
@@ -128,7 +135,7 @@ fun AlbumPanel(
     Column(
         Modifier
             .fillMaxWidth()
-            // 高度完全交给调用方（半屏由外层 weight 盒子决定），这里再乘 0.5 会留白
+            // 高度完全交给调用方（槽位高度 = max(键盘高度, 280dp)），这里铺满即可
             .fillMaxSize()
             .background(Color.White)
     ) {
@@ -138,6 +145,11 @@ fun AlbumPanel(
                 .fillMaxWidth()
                 .weight(1f)
                 .onSizeChanged { listHeightPx.floatValue = it.height.toFloat() }
+                // 点空白处 = 收起面板（QQ 里面板里点空白也是关掉，和点聊天区一致）
+                .clickable(
+                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                    indication = null,
+                ) { onDismiss() }
         ) {
             if (loading) {
                 LoadingBox(Modifier.align(Alignment.Center))
@@ -150,11 +162,11 @@ fun AlbumPanel(
                     modifier = Modifier.align(Alignment.Center).clickable { onPermission() },
                 )
             } else if (items.isEmpty()) {
-                // layout/ez5: TextView "暂无图片" 17sp, qui_common_text_secondary
+                // layout/ez5: TextView "暂无图片" 17sp, qui_common_text_secondary(#8F3C3C43)
                 Text(
                     "暂无图片",
                     fontSize = 17.sp,
-                    color = Color(0xFF929296),
+                    color = Color(0x8F3C3C43),
                     modifier = Modifier.align(Alignment.Center),
                 )
             } else {
@@ -168,7 +180,6 @@ fun AlbumPanel(
                         ThumbCell(
                             item = item,
                             seq = if (index >= 0) index + 1 else 0,
-                            single = items.size == 1,
                             listHeightPx = listHeightPx.floatValue,
                             onToggle = {
                                 val next = if (index >= 0) {
@@ -193,48 +204,54 @@ fun AlbumPanel(
             }
         }
 
-        // ===== 底栏（对应 layout/ez5 的 LinearLayout id/jst，真实内边距 25dp）=====
-        // PhotoPanelVB.e(): AIOUtil.d(j, 25,25,25,25) 会覆盖 XML 的 17dp
+        // ===== 底栏（layout/ez5 的 LinearLayout id/jst：minHeight 60dp, paddingTop 11dp,
+        //        paddingStart/End 17dp —— XML 原值）=====
         Row(
             Modifier
                 .fillMaxWidth()
-                .heightIn(min = 60.dp)
-                .padding(start = 25.dp, end = 25.dp, top = 25.dp, bottom = 25.dp),
+                .heightIn(min = ChatPanelSpec.AlbumBottomBarHeight)
+                .padding(
+                    start = ChatPanelSpec.AlbumBottomBarPaddingHorizontal,
+                    end = ChatPanelSpec.AlbumBottomBarPaddingHorizontal,
+                    top = ChatPanelSpec.AlbumBottomBarPaddingTop,
+                ),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // 「相册」16sp qui_common_text_primary(#E6000000) —— 点击跳出到系统相册
-            Text(
-                text = "相册",
-                fontSize = 16.sp,
-                color = Color(0xE6000000),
+            // 「相册」16sp qui_common_text_primary(#E6000000)，带 1dp drawablePadding 的下拉箭头
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.clickable { onPickFromSystemAlbum() },
-            )
+            ) {
+                Text(text = "相册", fontSize = 16.sp, color = Color(0xE6000000))
+                Spacer(Modifier.width(1.dp))
+                Text(text = "▾", fontSize = 10.sp, color = Color(0xE6000000))
+            }
             // 「编辑」16sp，enable = 选中数量 == 1（PhotoPanelVB.handleUIState: size == 1）
             Text(
                 text = "编辑",
                 fontSize = 16.sp,
-                color = if (selected.size == 1) Color(0xE6000000) else Color(0x423C3C43),
+                color = if (selected.size == 1) Color(0xE6000000) else Color(0x8F3C3C43),
                 modifier = Modifier
                     .padding(start = 23.dp)
                     .clickable(enabled = selected.size == 1) {
                         onToast("暂不支持编辑图片")
                     },
             )
-            // 「原图」= 16dp 方形复选框 + 文字，marginStart 23dp / 3dp
+            // 「原图」= 16dp 复选框 + 文字，marginStart 23dp / 3dp
             Spacer(Modifier.width(23.dp))
             Box(
                 Modifier
                     .size(16.dp)
-                    .clip(RoundedCornerShape(2.dp))
-                    .background(if (original) QQ.Blue else Color.White)
+                    .clip(CircleShape)
+                    .background(if (original) Color(0xFF0099FF) else Color.White)
                     .then(
-                        if (original) Modifier
-                        else Modifier.border(1.dp, Color(0xFFC8C8CC), RoundedCornerShape(2.dp))
+                        if (original) Modifier.border(1.dp, Color.White, CircleShape)
+                        else Modifier.border(1.dp, Color(0xFFC8C8CC), CircleShape)
                     )
                     .clickable { original = !original },
                 contentAlignment = Alignment.Center,
             ) {
-                if (original) Text("✓", fontSize = 11.sp, color = Color.White)
+                if (original) Text("✓", fontSize = 10.sp, color = Color.White)
             }
             Spacer(Modifier.width(3.dp))
             Text(
@@ -247,7 +264,7 @@ fun AlbumPanel(
             if (original && selected.isNotEmpty()) {
                 val total = items.filter { selected.contains(it.uri) }.sumOf { it.size }
                 Spacer(Modifier.width(2.dp))
-                Text(text = formatSize(total), fontSize = 16.sp, color = Color(0xFF86909C))
+                Text(text = formatSize(total), fontSize = 16.sp, color = Color(0x8F3C3C43))
             }
             Spacer(Modifier.weight(1f))
             // 发送：14sp、高 32dp、minWidth 60dp；
@@ -281,37 +298,47 @@ fun AlbumPanel(
 /**
  * 单张缩略图 —— 对应 `layout/ez3`。
  *
- * 视觉依据：
- *  - 图片 `marginLeft/Right = 2dp`、`scaleType = centerCrop`、**无圆角**
- *  - 右上角 CheckBox 20dp（style a5w textSize=20dp），选中时显示序号
- *  - 选中遮罩 `#33000000` 铺满图片（id/dq4）
- *  - 视频时长 `id/drh`：12sp 白字、高 17dp、padding 5dp、圆角 18dp 深色底、右下 4dp
- *  - 已编辑角标 `id/udx`：17dp 圆形深底、左下 5dp（本项目无编辑功能，故不显示）
+ * 关键：**宽度不是固定 158dp**。
+ * QQ 的 item 根布局是 `wrap_content`，内部 URLImageView 是 `match_parent`，
+ * RecyclerView 给 wrap_content 子项的是 `AT_MOST`（不是 EXACTLY），
+ * 于是 `adjustViewBounds=true` 生效：ImageView 按图片宽高比自适应宽度，
+ * 再被 `maxWidth=300dp` / `minWidth=50dp` 夹住 —— **整张图能完整显示**（不裁切）。
+ * 本项目用 MediaStore 里读到的原始宽高算同一个宽度：
+ * `w = itemHeight × (imgW / imgH)`，夹在 50dp~300dp，再加左右各 2dp 外边距。
  */
 @Composable
 private fun ThumbCell(
     item: AlbumItem,
     seq: Int,
-    single: Boolean,
     listHeightPx: Float,
     onToggle: () -> Unit,
     onPreview: () -> Unit,
     onSwipeOut: () -> Unit,
 ) {
     var offsetY by remember(item.uri) { mutableFloatStateOf(0f) }
-    // 手指按下时在条目内的 Y（等价 ItemSwipeSendDecoration.i = 相对 RecyclerView 的 downY，
-    // 因为水平条里 item 高度 == RecyclerView 高度，两者数值相同）
+    // 手指按下时在条目内的 Y（等价 ItemSwipeSendDecoration.i）
     var startY by remember(item.uri) { mutableFloatStateOf(0f) }
     val isVideo = item.mime.startsWith("video") || item.durationMs > 0
     val scope = rememberCoroutineScope()
-    val density = androidx.compose.ui.platform.LocalDensity.current
+    val density = LocalDensity.current
 
     // 拖动进度 = |dy| / startY，与 QQ h.k() 的 abs(dy)/initialTouchY 一致
     val progress = if (startY > 0f) (abs(offsetY) / startY).coerceIn(0f, 1f) else 0f
 
+    val minPx = with(density) { ChatPanelSpec.ThumbMinWidth.toPx() }
+    val maxPx = with(density) { ChatPanelSpec.ThumbMaxWidth.toPx() }
+    val fallbackPx = with(density) { ChatPanelSpec.ThumbFallbackWidth.toPx() }
+    val imageWidthPx = if (listHeightPx > 0f && item.widthPx > 0 && item.heightPx > 0) {
+        (listHeightPx * item.widthPx.toFloat() / item.heightPx.toFloat()).coerceIn(minPx, maxPx)
+    } else {
+        fallbackPx.coerceIn(minPx, maxPx)
+    }
+    val marginPx = with(density) { ChatPanelSpec.ThumbHorizontalMargin.toPx() }
+    val cellWidth = with(density) { (imageWidthPx + marginPx * 2).toDp() }
+
     Box(
         Modifier
-            .then(if (single) Modifier.fillMaxWidth() else Modifier.width(158.dp))
+            .width(cellWidth)
             .fillMaxHeight()
             .offset { IntOffset(0, offsetY.roundToInt()) }
             // 拖动中视觉：alpha = 1 - 0.5*frac, scale = 1 - 0.3*frac（ItemSwipeSendDecoration$c.l）
@@ -364,17 +391,15 @@ private fun ThumbCell(
                     },
                     onDragCancel = { offsetY = 0f; startY = 0f },
                     onVerticalDrag = { _, drag ->
-                        // QQ updateDxDy: 只允许 UP（t & 2 == 0 → dy = min(0, dy)），
-                        // 所以向下拖时条目不动（dy 被夹到 0）
+                        // QQ updateDxDy: 只允许 UP（dy = min(0, dy)），向下拖时条目不动
                         offsetY = (offsetY + drag).coerceAtMost(0f)
                     },
                 )
             }
-            // 点击图片 = 打开全屏预览（PhotoPanelAdapter.b0 → PhotoPanelVM.h0）。
-            // 与拖拽共用同一节点：位移超过 slop 后 tap 会被 cancel，两者不冲突。
+            // 点击图片 = 打开全屏预览（PhotoPanelAdapter.b0 → PhotoPanelVM.h0）
             .clickable { onPreview() },
     ) {
-        // 图片本体：左右各 2dp 边距，无圆角，centerCrop
+        // 图片本体：左右各 2dp 边距，无圆角；宽度已按宽高比算好，所以 centerCrop 不会裁到内容
         AsyncImage(
             model = ImageRequest.Builder(LocalContext.current)
                 .data(item.uri)
@@ -382,37 +407,40 @@ private fun ThumbCell(
                 .build(),
             contentDescription = null,
             contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize().padding(horizontal = 2.dp),
+            modifier = Modifier.fillMaxSize().padding(horizontal = ChatPanelSpec.ThumbHorizontalMargin),
         )
 
-        // 点击图片 = 打开全屏预览（已在根节点 clickable 中处理）
         // 选中遮罩 id/dq4：#33000000，选中才显示
         if (seq > 0) {
             Box(
                 Modifier
                     .fillMaxSize()
-                    .padding(horizontal = 2.dp)
+                    .padding(horizontal = ChatPanelSpec.ThumbHorizontalMargin)
                     .background(Color(0x33000000))
             )
         }
 
-        // 右上角 CheckBox：容器 paddingTop=4 左=27 右=4（layout/ez3 id/udh）
+        // 右上角 CheckBox：容器 paddingTop=4dp / paddingEnd=4dp（layout/ez3 id/udh）。
+        // 真实样式 = QUICheckBox(style a5w)：24dp 圆形、文字 14sp 白色居中；
+        // 未选中 = #4D000000 填充 + 1dp 白描边（drawable/qui_common_check_box_unchecked_white_border），
+        // 选中 = brand_standard(#FF0099FF) 填充 + 1dp 白描边（quicheckbox/d.f()）。
         Box(
             Modifier
                 .align(Alignment.TopEnd)
-                .padding(top = 4.dp, end = 4.dp, start = 27.dp)
-                .size(20.dp)
+                .padding(top = 4.dp, end = 4.dp)
+                .size(24.dp)
                 .clip(CircleShape)
-                .background(if (seq > 0) QQ.Blue else Color(0x66000000))
+                .background(if (seq > 0) Color(0xFF0099FF) else Color(0x4D000000))
+                .border(1.dp, Color.White, CircleShape)
                 .clickable { onToggle() },
             contentAlignment = Alignment.Center,
         ) {
             if (seq > 0) {
-                Text("$seq", color = Color.White, fontSize = 13.sp)
+                Text("$seq", color = Color.White, fontSize = 14.sp)
             }
         }
 
-        // 视频时长 id/drh：右下角，margin 4dp，radius 18dp，12sp
+        // 视频时长 id/drh：右下角，margin 4dp，radius 18dp，12sp，深色底
         if (isVideo && item.durationMs > 0) {
             Text(
                 text = formatDuration(item.durationMs),
@@ -458,11 +486,14 @@ private fun loadAlbum(context: android.content.Context, videoMode: Boolean): Lis
     } else {
         android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI
     }
+    // 除了基本信息，还要原始宽高：QQ 的缩略图宽度是按图片宽高比算出来的（layout/ez3 的 adjustViewBounds）
     val projection = arrayOf(
         android.provider.MediaStore.MediaColumns._ID,
         android.provider.MediaStore.MediaColumns.MIME_TYPE,
         android.provider.MediaStore.MediaColumns.DATE_ADDED,
         android.provider.MediaStore.MediaColumns.SIZE,
+        android.provider.MediaStore.MediaColumns.WIDTH,
+        android.provider.MediaStore.MediaColumns.HEIGHT,
     )
     val sortOrder = "${android.provider.MediaStore.MediaColumns.DATE_ADDED} DESC"
     return try {
@@ -471,6 +502,8 @@ private fun loadAlbum(context: android.content.Context, videoMode: Boolean): Lis
             val mimeCol = c.getColumnIndexOrThrow(android.provider.MediaStore.MediaColumns.MIME_TYPE)
             val dateCol = c.getColumnIndexOrThrow(android.provider.MediaStore.MediaColumns.DATE_ADDED)
             val sizeCol = c.getColumnIndex(android.provider.MediaStore.MediaColumns.SIZE)
+            val wCol = c.getColumnIndex(android.provider.MediaStore.MediaColumns.WIDTH)
+            val hCol = c.getColumnIndex(android.provider.MediaStore.MediaColumns.HEIGHT)
             while (c.moveToNext() && list.size < 500) {
                 val id = c.getLong(idCol)
                 list.add(
@@ -479,6 +512,8 @@ private fun loadAlbum(context: android.content.Context, videoMode: Boolean): Lis
                         mime = c.getString(mimeCol) ?: "",
                         dateAdded = c.getLong(dateCol),
                         size = if (sizeCol >= 0) c.getLong(sizeCol) else 0,
+                        widthPx = if (wCol >= 0) c.getInt(wCol) else 0,
+                        heightPx = if (hCol >= 0) c.getInt(hCol) else 0,
                     )
                 )
             }

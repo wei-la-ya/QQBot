@@ -303,6 +303,8 @@ fun MentionTextField(
     appId: String,
     placeholder: String,
     modifier: Modifier = Modifier,
+    /** 只加在内部 BasicTextField 上的修饰符（焦点相关：focusRequester / onFocusChanged） */
+    fieldModifier: Modifier = Modifier,
     onPickEveryone: (() -> Unit)? = null,
 ) {
     val chips = remember(value, members) { parseAtChips(value, members) }
@@ -335,7 +337,7 @@ fun MentionTextField(
             visualTransformation = AtVisualTransformation(chips),
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
             keyboardActions = KeyboardActions(),
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().then(fieldModifier),
             decorationBox = { inner ->
                 Box {
                     if (fieldValue.text.isEmpty()) {

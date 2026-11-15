@@ -706,6 +706,97 @@ ArkAppLoadLayout   id/0x7f0a46a2   layout_width=263dp  layout_height=294dp
 渠道重要性设为 `IMPORTANCE_MIN`，不出声、不弹窗。
 如需真正的消息通知，再加 channel + `NotificationCompat` 即可。
 
+### 3.13 底部「面板槽位」：键盘 / 表情 / 加号 / 相册 只允许一个（2026-11-15 反编译确认）
+
+**结论：QQ 的输入区下方只有一块面板空间，任何面板都只是「占这块空间」，高度由容器统一给。**
+
+| 事实 | 证据 |
+|---|---|
+| 键盘与面板共用同一槽位 | 事件 `AIOMsgListEvent$HideKeyBoardAndPanel`（`c6`，`aio/event/`），名字本身就是语义 |
+| 相册面板**不设高度** | `PhotoPanelVB.java` 全文只有 `recyclerView.setLayoutManager(...)` / `addItemDecoration` 等，**没有任何设置高度的代码**（`c18 .../aio/panel/photo/PhotoPanelVB.java:379-386`） |
+| 高度由容器统一给 | `com.tencent.input.base.panelcontainer.j#w(float density, Configuration cfg)`：<br>`keyboardH = keyboard.e.a.a(context, orientation)`（上次保存的键盘高度）<br>`minH = (int)(density * 280)`<br>`return coerceAtLeast(keyboardH, minH)` → **面板高 = max(键盘高, 280dp)**；多窗口时 `(int)(density*204)`（`j.java:387-400, 568-572`） |
+| 保存的键盘高度也被抬到 ≥280dp | `j.java:434-443`：保存时 `max(keyboardH, (int)(280*density))` |
+| 面板 View 被强制写成该高度 | `j#E()`：`layoutParams.height = 目标高度; view.setLayoutParams(...)`（`j.java:137-149, 516-518`），容器 FrameLayout 同样（`j.java:282-290`，动画 150ms） |
+| 表情面板没有自己的高度，只有「大屏」例外 | `aio/panel/emoticon/d.java:174-184` 的 `r0(boolean)`：`aio.utils.f.d(ctx)` 为真时返回 `heightPixels * 0.455f`，否则返回 `null`（= 用容器默认高度） |
+
+**本项目据此实现**（`ui/ChatPanelSpec.kt` + `ui/ChatScreen.kt`）：
+
+- 一个状态 `panel: ChatPanelKind { NONE, EMOJI, PLUS, ALBUM }`，槽位里**永远只有一个**；
+- 打开任何面板：`focusManager.clearFocus()` + `keyboard.hide()` + 关掉其它面板/相册；
+- 输入框拿到焦点（`onFocusChanged.isFocused`，挂在**真正的 BasicTextField** 上）：立刻关掉相册/表情/加号面板；
+- **返回键**：`BackHandler(enabled = 面板非空 || 键盘可见)`，先关面板、再收键盘，最后才退群聊；
+- **点空白**：聊天区点击 + 相册内容区空白点击都是 `closeAllPanels()`；
+- 槽位高度 = `max(实测键盘高度, 280dp)`，表情/加号/相册三者同高，从键盘切面板时聊天区高度不变。
+
+> bug 根因记录：旧实现把 `Modifier.onFocusChanged` 的判断写成 `st.isFocused`，而且挂在包住
+> `MentionTextField` 的 **Box** 上 —— 焦点其实在内部的 `BasicTextField`，父节点的
+> `isFocused` 永远 false ⇒「点输入框后键盘起来了，但相册/表情面板没关」。
+> 现在把 `focusRequester` + `onFocusChanged` 直接交给 `MentionTextField` 的 `fieldModifier`，
+> 挂在 BasicTextField 自己身上。
+
+**QQ 侧的补充证据（同一轮反编译）**
+
+| 行为 | QQ 实现 |
+|---|---|
+| 返回键优先级 | `AIOActivity.onBackPressed` → `AIODelegate.c()` → `ChatFragmentProvider.onBackPressed` → `BackEventEmitter` 遍历所有消费者；**`PanelBackPressHelper`（`c3/.../aio/helper/bi.java:126-159`）**：语音录制 → 消费；`isShowPanel` → 发 `HideAllPanelMsgIntent` **只关面板并消费**；否则返回 false → 一路到 `AIOActivity.super.onBackPressed()` 才离开聊天 |
+| 键盘态返回键 | QQ 代码里**没有**专门分支（无 `isShowKeyboard` 处理），推测交给系统 IME 自己消费 —— 本项目仍补了一个「先收键盘」的分支，行为一致 |
+| 点消息列表 | `AIOMsgListVM.x0()`（`c3/.../aio/msglist/AIOMsgListVM.java:636-644`）：`isShowKeyboard ? HideAllPanelAndKeyboard : (isShowPanel ? HideAllPanel : 无)` |
+| 相册面板**内部**空白点击 | **不关闭**。面板根布局 `InterceptParentTouchLayout.dispatchTouchEvent` 里 `getParent().requestDisallowInterceptTouchEvent(true)` 后 **`return true` 无条件吃掉所有触摸**（`c12/.../qqui/widget/InterceptParentTouchLayout.java:43-66`）<br>⚠ 本项目**按用户明确要求**改成「点相册空白 = 关闭」，与 QQ 有意不同 |
+| 面板出现时的键盘处理 | 先 `imm.hideSoftInputFromWindow(...)`，再等键盘隐藏回调后才展开面板（`panelcontainer/j.java:523, 532-542`），动画 150ms |
+
+**聊天区不被盖住（贴底）**：QQ 的做法是消息列表用 `AIOLayoutManager.setStackFromEnd(true)`
+（`AbsMsgListVB$recyclerView$2.java:59-60`，`AIOLinearLayoutManager.java:317` 锚到 `itemCount-1`），
+所以输入区高度变化时列表**自动保持末尾贴底**，全仓库确实找不到 `scrollToBottom` 调用；
+高度变化只改列表底部 padding（`AIOMsgListVB.f3()`，`c5/.../AIOMsgListVB.java:754-773`）。
+
+Compose 的 LazyColumn 没有 `stackFromEnd`，本项目用等价实现：
+面板是**真实布局兄弟节点**（不是浮层，聊天区 `weight(1f)` 会自动变矮），
+并在「原本贴着底部」时于两个 frame 后 `scrollToItem(最后一条)`，
+保证最新的消息（包括自己刚发的）始终露在输入栏上方。
+
+
+### 3.14 相册缩略图宽度真相：**不是固定 158dp**（纠正 3.1.2）
+
+旧结论「多张时每张 158dp」**只适用于「无相册权限」占位项**，不是缩略图：
+
+```java
+// PhotoPanelAdapter.java:175-181
+private final void f0(RecyclerView.ViewHolder holder) {
+    if (holder instanceof com.tencent.mobileqq.aio.panel.photo.c) {   // ← 只有占位项 holder c（itemViewType==100）
+        holder.itemView.getLayoutParams().width =
+            getItemCount() == 1 ? MATCH_PARENT : d.a(158);
+    }
+}
+```
+
+缩略图项（holder `t`，布局 `layout/ez3`）**代码里从不设置宽度**，宽度是布局量出来的：
+
+| 证据 | 说明 |
+|---|---|
+| `layout/ez3` 根 `RelativeLayout`：`layout_width=wrap_content`、`layout_height=match_parent`（aapt2 dump） | 宽度交给子 View 决定 |
+| 内部 `URLImageView`：`match_parent × match_parent`、`scaleType=6`(CENTER_CROP)、`adjustViewBounds=true`、`maxWidth=300dp`、`minWidth=50dp` | 关键三件套 |
+| RecyclerView 给 wrap_content 子项的是 `AT_MOST`（不是 EXACTLY）→ `MATCH_PARENT` 子 View 拿到的也是 `AT_MOST` → **`adjustViewBounds` 生效** | ImageView 按图片宽高比自适应宽度，被 50dp/300dp 夹住 |
+| `PhotoPanelAdapter.java:440-446` 只是把 LP 复位成 `-1/-1`（滑出动效改过 LP 时） | 不覆盖宽度 |
+| 图片加载链路只 `setImageDrawable`（`c5 .../libra/LibraPicLoader.java:570`），全程无 `setScaleType`/`setAdjustViewBounds` | 缩放方式就是 XML 的 CENTER_CROP |
+| 间距：`ItemSwipeSendDecoration.getItemOffsets` 里 `rect.setEmpty()`（`itemswipe.java:614-621`）+ item 左右各 2dp margin | 相邻间距 = 4dp，无竖直间距 |
+
+**所以 QQ 的缩略图 = 高度填满面板内容区、宽度按图片宽高比算（50~300dp），整张图完整显示**，
+不是「固定 158dp 再居中裁一刀」。
+
+本项目实现（`ui/HalfScreenAlbum.kt`）：
+`MediaStore` 多查 `WIDTH`/`HEIGHT` → `w = 内容区高 × (imgW/imgH)`，`coerceIn(50dp, 300dp)`，
+外加左右各 2dp margin；拿不到宽高时退回 158dp。
+
+**其它一并纠正的细节**：
+
+| 项 | 旧文档 | 真相（证据） |
+|---|---|---|
+| 相册底栏内边距 | 「真实 25dp 四边」 | **错**。`PhotoPanelVB.e()` 里的 `AIOUtil.d()` 是 **TouchDelegate 热区**（`aio/utils/AIOUtil.java:163-193`），不是 padding ⇒ 底栏就是 XML 的 `minHeight=60dp`、`paddingTop=11dp`、`paddingStart/End=17dp`（`r/i/ez5.xml` aapt2） |
+| 选中角标 | 「20dp 方形 CheckBox」 | **错**。`QUICheckBox` style `a5w`：`24dp × 24dp`（dimen/d1_=24dp）、`textSize 14sp`、白色居中；未选中 = `drawable/qui_common_check_box_unchecked_white_border`（圆 r=23/48，填充 `#4D000000`，白描边）+ 选中 = `quicheckbox/d.f()`：**圆形 OVAL**，填充 `qui_common_brand_standard = #FF0099FF`，1dp `qui_common_bubble_guest(#FFFFFFFF)` 描边（`c8 .../quicheckbox/QUICheckBox.java:44-120`、`d.java:41-43`、`_qqres` style 0x7f130397） |
+| 「暂无图片」颜色 | — | `qui_common_text_secondary = #8F3C3C43`（`r/l/qui_common_text_secondary.xml`） |
+| 底栏文字色 | — | `qui_common_text_primary = #E6000000` |
+
+
 ## 四、待做的事（逐层对比清单）
 
 对每一层，打开对应 QQ 类 → 找到真实行为 → 打开本项目实现 → 比对差异 → 修正 → 记录结论。
@@ -716,9 +807,10 @@ ArkAppLoadLayout   id/0x7f0a46a2   layout_width=263dp  layout_height=294dp
 | 对比项 | QQ 出处 | 本项目 | 状态 |
 |---|---|---|---|
 | 滚动方向（横向 vs 网格） | `PhotoPanelVB.java:379` `new LinearLayoutManager(ctx, 0, false)` | `HalfScreenAlbum.kt` LazyRow | 已复核（依据：PhotoPanelVB.bindViewAndData 字节码确认 `setLayoutManager(new LinearLayoutManager(ctx,0,false))`） |
-| 单张/多张宽度策略 | `PhotoPanelAdapter.f0()` | `HalfScreenAlbum.kt` | 已复核（依据：`f0()` `getItemCount()==1 ? -1 : d.a(158)`） |
-| 方向间 - 间距 | `layout/ez3` `dq3 marginLeft/Right=2dp` | 原为 6dp + 8dp contentPadding | **已改**（依据：3.1.2） |
-| item 圆角/角标/间距 | `layout/ez3` + `PhotoPanelAdapter.onBindViewHolder` | 原为圆角6dp+圆形序号角标 | **已改**，无圆角、方形20dp CheckBox 显序号（依据：3.1.2） |
+| **缩略图宽度** | `layout/ez3` 根 wrap_content + 图 `adjustViewBounds` + `maxWidth=300dp/minWidth=50dp`（`PhotoPanelAdapter.f0()` 的 158dp **只用于权限占位项**） | 原固定 158dp + 全高 Crop（又长又宽还裁图） | **已改**为 `宽 = 内容区高 × 图片宽高比`，夹 50~300dp（依据：3.14） |
+| 单张时的宽度 | 同上（占位项才有 MATCH_PARENT） | 原单张直接铺满屏宽 | **已改**：单张同样按宽高比、最多 300dp（依据：3.14） |
+| 方向间 - 间距 | `layout/ez3` `dq3 marginLeft/Right=2dp`；`ItemSwipeSendDecoration.getItemOffsets` = `rect.setEmpty()` | 原为 6dp + 8dp contentPadding | **已改**（依据：3.1.2 / 3.14） |
+| item 圆角/角标 | `layout/ez3`：无圆角；角标 `QUICheckBox(style a5w)` = **24dp 圆形**、14sp 白字居中、未选中 `#4D000000`+白圈、选中 `#FF0099FF`+白圈 | 原为圆角6dp + 20dp 方形角标 | **已改**（依据：3.14） |
 | 选中遮罩 | `id/dq4` background `#33000000`，选中可见 | 无 | **已改**（依据：3.1.2） |
 | 视频时长角标 | `id/drh` 12sp 白字、17dp 高、5dp 内边距、`mgq`(dark,radius18) 底、右下 4dp | 无 | **已改**（依据：3.1.2） |
 | 已编辑角标 | `id/udx` 17dp、`mgp`(dark oval) 底、`qui_edit_icon_white`、左下 5dp | 无 | **已改**（依据：3.1.2） |
@@ -734,7 +826,8 @@ ArkAppLoadLayout   id/0x7f0a46a2   layout_width=263dp  layout_height=294dp
 | 点击图片 = 打开全屏预览 | `PhotoPanelAdapter.b0` → `PhotoPanelVM.h0` | 原点击即勾选 | **已改** |
 | 最大选择数 20（我的电脑 50） | `PhotoPanelVB.A0` | 原 9 | **已改** |
 | 「暂无图片」空态 + 无权限跳设置位 | `layout/ez5` + `PhotoPanelVM.h0` | 原「相册里没有图片」 | **已改** |
-| 底栏真实内边距 = 25dp（覆盖 XML 17dp） | `PhotoPanelVB.e()` `AIOUtil.d(j,25,25,25,25)` + `post` | — | **已改** |
+| **底栏内边距** | `layout/ez5`：`minHeight=60dp`、`paddingTop=11dp`、`paddingStart/End=17dp`（`AIOUtil.d()` 是 TouchDelegate，不是 padding） | 原按旧结论写成 25dp 四边 | **已改**为 XML 原值（依据：3.14） |
+| **面板高度** | 由容器给：`max(键盘高, 280dp)`（`panelcontainer.j#w()`），面板自己不设高度 | 原用 `weight(1f)` 抢半屏 | **已改**为槽位统一高度（依据：3.13） |
 
 ### 第 2 层：表情面板
 | 对比项 | QQ 出处 | 本项目 | 状态 |
@@ -756,12 +849,19 @@ ArkAppLoadLayout   id/0x7f0a46a2   layout_width=263dp  layout_height=294dp
 |---|---|---|---|
 | 图标顺序（语音/图片/相机/表情/加号） | `classes4.dex` 引用 6 个图标；`aio.input` 无 layout，程序化组装（3.1.3） | `ChatScreen.kt` `ChatInputBar` | 已复核（依据：3.1.3，QQ 无 layout 可抄，按 drawable 资源名 + 交互约定实现） |
 | 图标尺寸与间距 | **QQ 无 layout，不可考**（3.1.3） | 24dp/38dp | 已复核（依据：3.1.3）—— 无法从 APK 取到原始数值 |
-| 表情/加号按钮双态图标 | `skin_aio_keyboard_nor` / `skin_aio_more_nor` | 未实现键盘图标态 | 待改 |
+| 表情/加号按钮双态图标 | `skin_aio_keyboard_nor` / `skin_aio_more_nor` | 槽位被占时切键盘图标，再点 = 收起面板回到键盘 | **已改**（依据：3.13） |
 
 ### 第 4 层：键盘 / 面板互斥
 | 对比项 | QQ 出处 | 本项目 | 状态 |
 |---|---|---|---|
-| 键盘与面板同一槽位 | `HideKeyBoardAndPanel` | `ChatScreen.kt` | 已按此实现，**待复核细节**（如点空白区域、返回键行为） |
+| 键盘与面板同一槽位 | `HideKeyBoardAndPanel`（c6） | `ChatScreen.kt` 单一 `panel: ChatPanelKind` + 槽位高度统一 | **已改**（依据：3.13） |
+| 打开面板先收键盘 | 面板容器统一管理 | `togglePanel()` 里 `clearFocus() + keyboard.hide()` | **已改** |
+| 点输入框 → 关掉面板再来键盘 | — | `onFocusChanged.hasFocus` → `panel = NONE` + 关相册 | **已改**（旧 bug：用了 `isFocused`，父 Box 永远收不到） |
+| 点聊天区空白 → 全收 | 同上 | 聊天区 `pointerInput` + 消息行 `onClick` → `closeAllPanels()` | **已改** |
+| 点面板内空白 → 关闭 | — | 相册内容区背景 `clickable` → `onDismiss()` | **已改**（按用户要求） |
+| **系统返回键先关面板** | `HideKeyBoardAndPanel` + AIO 返回优先级 | `BackHandler(enabled = 面板非空 || 键盘可见)`：面板 → 键盘 → 退群聊 | **已改** |
+| **最新消息不被面板遮挡** | 聊天列表贴底 | 面板是布局兄弟节点（聊天区 `weight(1f)` 自动变矮）+ 开合时若原本贴底则两帧后 `scrollToItem(最后一条)` | **已改**（QQ 消息列表 part 未反编译，按观感实现，标注推断） |
+| 面板高度 = max(键盘高, 280dp) | `panelcontainer.j#w()` | `ChatPanelSpec.MinHeight = 280.dp` + 实测 IME 高度取大 | **已改**（依据：3.13） |
 
 ### 第 5 层：消息气泡 / 引用 / 拖放区
 | 对比项 | QQ 出处 | 本项目 | 状态 |
