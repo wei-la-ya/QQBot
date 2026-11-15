@@ -761,6 +761,11 @@ private fun Bubble(msg: ChatMessage, self: Boolean, onImageClick: (String) -> Un
             }
             Spacer(Modifier.height(4.dp))
         }
+        // 语音：QQ 风格语音条（可播放/暂停，进度随时长前移）
+        msg.segments.filter { it.kind == MessageSegment.Kind.VOICE }.forEach { seg ->
+            VoiceBubble(seg, self)
+            Spacer(Modifier.height(4.dp))
+        }
         msg.segments.filter { it.kind == MessageSegment.Kind.VIDEO }.forEach {
             Box(
                 Modifier.width(180.dp).aspectRatio(16f / 9f)

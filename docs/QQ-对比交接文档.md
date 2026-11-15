@@ -546,6 +546,47 @@ UI：卡片（标题「聊天记录」+ 最多 4 行预览 + 「查看N条消息
 > 说明：真实样本里嵌套未出现，嵌套分支按官方 schema 的递归定义实现，
 > 尚未用真实嵌套样本验证。
 
+
+### 3.8 语音消息（2026-11-15 实测 + QQ 反编译）
+
+**为什么收到的语音不显示、也放不了**
+
+1. 官方 `content_type` 里语音是 **`voice`**，既不是 `audio/*` 也不含 `silk`，
+   原解析把它归成了 FILE → 界面上什么都没画出来。已改为识别 `voice`。
+2. 两个地址的实测结果：
+
+| 字段 | 实测 |
+|---|---|
+| `attachments[].url` | HTTP 200，响应头写 `audio/mp3`，但字节头是 `02 23 21 53 49 4c 4b` = `\x02#!SILK` → **实际是 SILK**，Android MediaPlayer 放不了 |
+| `attachments[].voice_wav_url` | HTTP 200，`RIFF….WAVE`，115278 字节 → **真 WAV，可直接播** |
+
+结论：**必须下载 `voice_wav_url` 到缓存再播放**（不是直接喂 URL 给播放器）。
+
+**语音条尺寸/资源全部取自 QQ 反编译**（不是自拟）：
+
+| 项 | QQ 出处 | 值 |
+|---|---|---|
+| 播放/停止图标 | `PttAudioPlayView.java`：两张位图 `c2p`(播放中) / `c2q`(停止) | 已提取为 `qq_ptt_playing` / `qq_ptt_paused` |
+| 播放控件 | `r/i/cyl.xml` `PttAudioPlayView` | **34dp × 34dp** |
+| 波形区 | 同上 `PttAudioWaveView` | **39dp × 37dp**，marginStart **12dp**、marginEnd **18dp** |
+| 行高 | 同上外层 RelativeLayout | **37dp** |
+| 时长文字 | 同上 `pttDuration` | **14sp**，颜色 `qui_common_text_secondary` |
+| 文字色 | `0x7f06133d` = `qui_common_text_secondary` | 非硬编码灰 |
+
+> 一处自我纠正：我一开始把图标写成 15dp，那是从**另一个布局**（语音转文字弹层 `r/i/8_.xml`）
+> 串过来的值；`c2q/c2p` 本身是 73×72px @xhdpi≈36.5dp，应填满 34dp 控件。已修正。
+> 另：我曾从被截断的输出里"拼"出一个 `pow(1-s/60)*125+15` 的宽度公式，
+> 复核后确认**无法证实**归属，已废弃；实际做法是
+> `AIOPttContentComponent` 里「时长文字测量宽 + 播放区宽 + margin 累加」。
+
+**尚未完成（且有客观障碍）**
+
+- **录音 + 变声**：QQ 的变声实现在 `voicechange/impl/VoiceChangeHelperImpl` 里是**空壳**
+  （只有构造器，没有算法），`VoiceChangeParams` 也不在已反编译的 dex 中
+  → 「变声跟 QQ 一致」无法据实复刻，不能凭印象编造音效。
+- **发送语音文件（silk/mp3/wav/ogg）**：官方文档明确支持（`file_type=3`，超限降级为 `file_type=4`），
+  这部分有据可依，是实现录音/发送时的落地路径。
+
 ## 四、待做的事（逐层对比清单）
 
 对每一层，打开对应 QQ 类 → 找到真实行为 → 打开本项目实现 → 比对差异 → 修正 → 记录结论。

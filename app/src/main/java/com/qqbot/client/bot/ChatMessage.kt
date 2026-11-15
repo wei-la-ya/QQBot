@@ -14,6 +14,20 @@ data class MessageSegment(
     val height: Int = 0,
     /** 本地缓存路径（断网也能显示历史图片）；为空表示只有 URL */
     val localPath: String = "",
+    /**
+     * 语音专用：官方给的**可播放 WAV 地址**（`voice_wav_url`）。
+     *
+     * 实测（2026-11-15）：`attachments[].url` 虽然响应头写 `audio/mp3`，
+     * 但字节头是 `\x02#!SILK`，其实是 SILK，Android 播放器放不了；
+     * 必须用 `voice_wav_url`（真 WAV，RIFF 头）下载后再播放。
+     */
+    val voiceWavUrl: String = "",
+    /** 语音识别文本（`asr_refer_text`），可能为空 */
+    val asrText: String = "",
+    /** 语音时长（毫秒），从 WAV 头算出来；未知为 0 */
+    val durationMs: Long = 0,
+    /** 附件字节数 */
+    val sizeBytes: Long = 0,
 ) {
     enum class Kind { IMAGE, VIDEO, VOICE, FILE, FACE }
 
@@ -184,13 +198,30 @@ data class ChatMessage(
                     val att = arr.optJSONObject(i) ?: continue
                     val ct = att.optString("content_type")
                     val u = android.text.Html.fromHtml(att.optString("url"), android.text.Html.FROM_HTML_MODE_LEGACY).toString()
+                    // 官方 content_type 里语音是 "voice"，既不是 audio/* 也不含 silk，
+                    // 所以之前语音被归成了 FILE，界面上什么都没显示。
                     val kind = when {
                         ct.startsWith("image/") -> MessageSegment.Kind.IMAGE
                         ct.startsWith("video/") -> MessageSegment.Kind.VIDEO
-                        ct.startsWith("audio/") || ct.contains("silk") -> MessageSegment.Kind.VOICE
+                        ct == "voice" || ct.startsWith("audio/") || ct.contains("silk") ->
+                            MessageSegment.Kind.VOICE
                         else -> MessageSegment.Kind.FILE
                     }
-                    if (u.isNotEmpty()) segments.add(MessageSegment(kind, url = u, contentType = ct))
+                    val wav = android.text.Html.fromHtml(
+                        att.optString("voice_wav_url"), android.text.Html.FROM_HTML_MODE_LEGACY
+                    ).toString()
+                    if (u.isNotEmpty() || wav.isNotEmpty()) {
+                        segments.add(
+                            MessageSegment(
+                                kind = kind,
+                                url = u.ifEmpty { wav },
+                                contentType = ct,
+                                voiceWavUrl = wav,
+                                asrText = att.optString("asr_refer_text"),
+                                sizeBytes = att.optLong("size", 0L),
+                            )
+                        )
+                    }
                 }
             }
             // 2. 富文本元素里的图片来源
