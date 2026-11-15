@@ -57,6 +57,13 @@ data class UiState(
     val pendingSends: List<PendingSend> = emptyList(),
     val markdownMode: Boolean = false,
     val toast: String? = null,
+    /**
+     * 轻提示序号：每 toast 一次 +1。
+     * UI 侧按它做 key 来「一次性」消费提示 —— 之前按 toast 文本做 key，
+     * 且要等 Snackbar 关闭才 consumeToast()，一旦中途切页面就再也不会被消费，
+     * 于是每次进/出群聊都会重复弹同一条提示。
+     */
+    val toastSeq: Long = 0,
     /** 定位到某条消息后高亮 */
     val highlightMsgId: String? = null,
     /** 当前会话的群成员（@ 映射用） */
@@ -1299,7 +1306,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** 当前图片缓存占用（字节），设置页展示用 */
     fun mediaCacheSize(): Long = mediaCache.sizeBytes()
 
-    fun toast(msg: String) = _state.update { it.copy(toast = msg) }
+    fun toast(msg: String) = _state.update { it.copy(toast = msg, toastSeq = it.toastSeq + 1) }
     fun consumeToast() = _state.update { it.copy(toast = null) }
 
     override fun onCleared() {

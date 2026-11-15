@@ -797,6 +797,70 @@ private final void f0(RecyclerView.ViewHolder holder) {
 | 底栏文字色 | — | `qui_common_text_primary = #E6000000` |
 
 
+### 3.15 聊天页图片气泡尺寸：QQ 的真实公式（2026-11-15 反编译）
+
+**问题**：本项目原来是 `widthIn(max = 200.dp)` 且**不限高**，1080×1920 的竖图显示成 200×355dp，
+一条图片消息吃掉大半屏，把最新消息挤出可视区（表现为「只看到头像和昵称、图片只露一部分」）。
+
+**QQ 的真实规则**（调用链 `AIOPicContentComponent` → `PicContentViewUtil.h()/j()` → `PicUtil.l()/j()` → `NTAIOImgThumbHelper`）：
+
+| 项 | 值 | 出处 |
+|---|---|---|
+| 可用宽 | `min(AIO视图宽, 屏宽) − 108dp − 28dp` | `NTAIOImgThumbHelper.java:145-167`；108dp = `ViewUtils.b(108)`；28dp = 8+10+10dp（`dimen/bnw`=8dp、`bnu`=10dp、`bnt`=10dp） |
+| 长边上限 | `0.85 × 可用宽`；原图长边 ≤200dp 的小图固定 **135dp** | `AIOPicThumbSizeConfig` 默认 `maxRatio=0.85f`（`:271`）；`NTAIOImgThumbHelper.java:98-111` |
+| 短边下限 | `0.28 × 可用宽`；小图 **45dp** | `minRatio=0.28f`；`NTAIOImgThumbHelper.java:130` |
+| 缩放 | `k = max(上限/长边, 下限/短边)`，宽高同乘 `k`（等比） | `PicUtil.java:77-80` |
+| 最终夹取 | 宽、高**各自** `coerceAtMost(上限)` → 极端比例变非等比，靠 `CENTER_CROP` 裁 | `PicUtil.java:82` |
+| 圆角 | **10dp**（`RoundBubbleImageView.setRadiusDP(10f)`，`canvas.clipPath` 硬裁，不是背景 drawable） | `AIOPicContentComponent.java:117-122`、`RoundBubbleImageView.java:77-87` |
+| 气泡内边距 | 图片 View 外面 8dp×4（气泡整体 = 图片 + 16dp） | `AIOPicContentComponent.java:177-180` |
+| scaleType | `CENTER_CROP`，背景置空 | `PicContentViewUtil.java:390-391` |
+| 超长图 | 超过 3:1 **只切换缩略图 cacheKey**，尺寸规则不变 | `PicContentViewUtil.i()` 字节码 0x00a5–0x00c4 |
+
+**推算结果（360dp 宽屏）**：可用宽 224dp → 长边上限 **190.4dp**、短边下限 **62.72dp**；
+1080×1920 竖图 → **107×190dp**；1920×1080 横图 → 190×107dp；1080×5400 长截图 → 62.7×190dp（裁切显示）。
+
+本项目实现：`ui/ChatImageSpec.kt`（纯函数，可单测）+ `ui/ChatScreen.kt` 的 `ChatImage`；
+单测 `ChatImageSpecTest` 锁定 9 条（竖图不撑满屏、横图、正方、长截图、小图 135dp 上限、
+小图不被放大、尺寸未知占位、可用宽变大时同比放大）。
+
+**列表行为（新消息 / 上滑）** —— QQ 的做法：
+
+| 项 | 实现 | 出处 |
+|---|---|---|
+| 末尾锚定 | `AIOLayoutManager.setStackFromEnd(true)` | `AbsMsgListVB$recyclerView$2.java:59-60` |
+| 收新消息 | `BaseMsgRepo.c0(true, true)`（checkFocus + **动画**） | `MsgNotificationAbility.v()` 字节码 0x0406-0x043c |
+| 自己发消息 | `c0(false, true)`（不做 focus 检查，**带动画**） | `MsgNotificationAbility.java:90` |
+| 是否贴底 | `last >= size - 2 && last < size` | `scrollers/a.java:112-121` |
+| 贴底 → 平滑滚 | `LinearSmoothScroller.startSmoothScroll` | `scrollers/a.java:112-172` |
+| 不贴底 → 不动 | 显示未读数气泡 / 「回到底部」箭头（`drawable/aio_back_bottom`，描述「回到底部.」） | `UnreadBubbleVB.java:85-99,149-167` |
+| 点箭头回底 | `c0(false, false)` → **无动画**直接跳 | `AIOMsgRepo.java:1039-1052` |
+
+本项目：`LazyColumn(reverseLayout = true)` + 数据倒序（= `stackFromEnd`），
+所以进群**首帧就停在最新一条**，不再有「先显示旧消息再强跳最新」的闪屏；
+新消息到达时贴底才 `animateScrollToItem(0)`；不贴底时右下角显示「回到底部」箭头。
+
+
+### 3.16 轻提示（toast）重复弹出 —— 根因与修复（2026-11-15）
+
+**现象**：点「清除昵称缓存」弹一次提示，进出群聊页面又弹一次，再进再退又弹；表情相关提示同理。
+
+**根因**（三个问题叠加）：
+1. 提示状态放在 `UiState.toast: String?` 里，消费方式是
+   `LaunchedEffect(state.toast) { snackbar.showSnackbar(it); vm.consumeToast() }`，
+   而 `showSnackbar` 是**挂起函数，要等提示自己消失才返回**；
+2. `SnackbarHost` 只挂在「主界面」的 `Scaffold` 上。提示还没消失就进了聊天页 → 那个 `LaunchedEffect`
+   随主界面一起被移出组合（协程被取消）→ `consumeToast()` **永远不执行** → `toast` 一直是那条文本；
+3. 回到主界面后 `LaunchedEffect(state.toast)` 因为 key（文本）没变不会自动重跑 ——
+   但只要有一次重组把它重新进入组合（进出群聊正是），就会再弹一次，且每次都消费不掉。
+
+**修复**：
+- `UiState` 增加 `toastSeq: Long`，每次 `toast()` 自增；
+- 提示渲染提到**根组合**（`QQAppContent` 里的 `GlobalToast`），所有页面（含聊天页、相机页）共用同一个 host；
+- `LaunchedEffect(toastSeq)` 里**先 `onShown()`（立刻 consume）再显示**，
+  这样即使中途切页面、协程被取消，状态也已经被消费，不可能重复弹；
+- 改用自绘的深色圆角提示条（QQ 风格），不再依赖只在主界面存在的 `SnackbarHost`。
+
+
 ## 四、待做的事（逐层对比清单）
 
 对每一层，打开对应 QQ 类 → 找到真实行为 → 打开本项目实现 → 比对差异 → 修正 → 记录结论。
@@ -869,10 +933,16 @@ private final void f0(RecyclerView.ViewHolder holder) {
 | 拖放区文案与淡蓝 | string `0x7f121e8a`「拖到此区域发送」/ `0x7f121e8b`「松手发送」、`qui_common_brand_light`=#330099FF | `HalfScreenAlbum`（已改为横向，拖放区需重做） | **待复核** |
 | 左滑引用 | `GestureEvent.LeftSwipeEvent`（c6）—— 已确认**只有 `handled` 布尔字段**，不含方向/阈值 | `SwipeQuoteRow.kt` | 已复核（依据：`AIOGestureEvent`/`GestureEvent` 全部字段只有一个 `boolean d`；`NormalMenuHelper` 只把它当作「关闭菜单」的触发源）→ 方向与手势参数 **QQ 侧无对应证据，属本项目自定义** |
 | 引用条样式 | 颜色已确认 | `ChatScreen.kt` | 已对齐 |
+| **图片气泡尺寸** | `PicUtil.l()` + `NTAIOImgThumbHelper`：长边 `0.85×(屏宽−136dp)`、短边 `0.28×…`、小图 135/45dp、宽高各自夹上限 | 原 `widthIn(max=200.dp)` 且不限高（竖图 200×355dp，吃掉大半屏） | **已改**为 `ChatImageSpec`（依据：3.15），并加 9 条单测 |
+| 图片圆角 | `RoundBubbleImageView.setRadiusDP(10f)` | 原 4dp | **已改**为 10dp |
+| 图片 scaleType | `CENTER_CROP` | Crop | 已对齐 |
+| 列表末尾锚定 | `AIOLayoutManager.setStackFromEnd(true)` | 原用「先滚到最底 + 延迟 16ms 再滚」的补偿，会闪一下 | **已改**为 `reverseLayout=true` + 数据倒序（依据：3.15） |
+| 上滑后新消息 | 不跟随，显示未读数 / 「回到底部」箭头 | 无 | **已改**为右下角箭头 |
 
 ### 第 6 层：其他
 - 消息列表项、群头像（QQ 有真实群头像，**机器人 API 拿不到**，见二.5）
 - 图片全屏查看的缩放/长按菜单
+
 
 ---
 

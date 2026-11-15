@@ -14,12 +14,13 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -31,12 +32,15 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.withContext
@@ -99,6 +103,56 @@ private fun QQApp(vm: MainViewModel = viewModel()) {
 
 @Composable
 private fun QQAppContent(vm: MainViewModel = viewModel(), state: com.qqbot.client.vm.UiState) {
+    Box(Modifier.fillMaxSize()) {
+        QQAppBody(vm = vm, state = state)
+        // 全局轻提示：所有页面（含聊天页）都渲染同一个 host，
+        // 且**显示前立刻消费**，所以同一条提示不会因为来回切页面而重复弹。
+        GlobalToast(state.toastSeq, state.toast) { vm.consumeToast() }
+    }
+}
+
+/**
+ * QQ 风格的应用内轻提示（底部居中的深色圆角条）。
+ *
+ * 为什么不用 SnackbarHost：SnackbarHost 只在「主界面」的 Scaffold 里存在，
+ * 一旦提示还没关闭就进了聊天页，`showSnackbar` 既不返回也不被取消，
+ * `consumeToast()` 永远不会执行 —— 回到主界面就又弹一次，如此反复。
+ */
+@Composable
+private fun GlobalToast(toastSeq: Long, text: String?, onShown: () -> Unit) {
+    var shown by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(toastSeq) {
+        val t = text ?: return@LaunchedEffect
+        onShown()
+        shown = t
+        kotlinx.coroutines.delay(1800)
+        shown = null
+    }
+    val msg = shown
+    if (msg != null) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+            Box(
+                Modifier
+                    .padding(bottom = 140.dp)
+                    .widthIn(max = 280.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color(0xE6000000))
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+            ) {
+                Text(
+                    text = msg,
+                    color = Color.White,
+                    fontSize = 14.sp,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun QQAppBody(vm: MainViewModel = viewModel(), state: com.qqbot.client.vm.UiState) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -132,13 +186,7 @@ private fun QQAppContent(vm: MainViewModel = viewModel(), state: com.qqbot.clien
     var showSearch by remember { mutableStateOf(false) }
     var searchResults by remember { mutableStateOf<List<com.qqbot.client.bot.ChatMessage>>(emptyList()) }
 
-    val snackbar = remember { SnackbarHostState() }
-    LaunchedEffect(state.toast) {
-        state.toast?.let {
-            snackbar.showSnackbar(it)
-            vm.consumeToast()
-        }
-    }
+    // 轻提示由外层的 GlobalToast 统一渲染并即时消费（见 QQAppContent），这里不再处理
 
     // 相册权限
     fun needPermission(): Array<String> =
@@ -428,7 +476,6 @@ private fun QQAppContent(vm: MainViewModel = viewModel(), state: com.qqbot.clien
 
     // ===== 主界面 =====
     Scaffold(
-        snackbarHost = { SnackbarHost(snackbar) },
         bottomBar = {
             QqBottomBar(
                 current = tab,

@@ -61,6 +61,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.painterResource
@@ -197,25 +198,31 @@ fun ChatScreen(
         maxPanelHeight,
     )
 
+    // 倒序视图：LazyColumn(reverseLayout = true) 里 index 0 在屏幕最底部 = 最新一条
+    val viewMessages = remember(messages) { messages.asReversed() }
+    val viewPendingSends = remember(pendingSends) { pendingSends.asReversed() }
+
+    // 倒序布局里「贴底」= 可见的最小 index 是 0（允许 1 个的余量）
     val atBottom by remember {
         derivedStateOf {
             val info = listState.layoutInfo
-            val last = info.visibleItemsInfo.lastOrNull() ?: return@derivedStateOf true
-            last.index >= info.totalItemsCount - 2
+            if (info.totalItemsCount == 0) return@derivedStateOf true
+            val first = info.visibleItemsInfo.firstOrNull() ?: return@derivedStateOf true
+            first.index <= 1
         }
     }
 
     /**
      * 面板 / 键盘开合会改变聊天区高度。QQ 里聊天列表是「贴底」的：
      * 输入区变高时最新的消息仍然露在输入栏上方，而不是被面板盖掉。
-     * 所以只要打开或关闭时本来就贴着底部，就在新高度生效后重新贴底。
+     * 所以只要打开或关闭时本来就贴着底部，就在新高度生效后重新贴底（index 0 = 最新）。
      */
     val stickScrollIfAtBottom: () -> Unit = {
         if (atBottom) {
             scope.launch {
                 withFrameNanos { }   // 让面板进入组合
                 withFrameNanos { }   // 让新高度完成测量
-                listState.scrollToItem((listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0))
+                listState.scrollToItem(0)
             }
         }
     }
@@ -297,35 +304,34 @@ fun ChatScreen(
         }
     }
 
-    // 进入会话：等消息真正加载完成（非空）后，无动画直接落到底部最新消息
-    var initialScrollDone by remember(conversation.chatKey) { mutableStateOf(false) }
-    LaunchedEffect(conversation.chatKey, messages.isNotEmpty()) {
-        if (!initialScrollDone && messages.isNotEmpty()) {
-            // 等下一帧，让 LazyColumn 完成首次测量，再滚到最后一条
-            kotlinx.coroutines.delay(16)
-            val lastIndex = (listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0)
-            listState.scrollToItem(lastIndex)
-            initialScrollDone = true
-        }
-    }
+    // 进会话**不需要**任何「先跳一次」的补偿动作：
+    // 倒序列表首帧就落在 index 0（最新一条）上，跟 QQ 的 stackFromEnd 一样是原生的末尾锚定。
 
-    // 后续新消息：只有本来就贴着底部时才自动跟随
-    LaunchedEffect(messages.size) {
-        if (initialScrollDone && atBottom && messages.isNotEmpty()) {
-            listState.animateScrollToItem((listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0))
+    // 后续新消息：只有「最新的那条变了」且本来就贴着底部时才自动跟随（倒序 → 目标是 index 0）。
+    // 注意不能用 messages.size 判断：上滑加载更早消息也会让 size 变大，
+    // 那样会把正在看历史的人强行拽回底部。
+    val newestId = messages.lastOrNull()?.id
+    var lastNewestId by remember(conversation.chatKey) { mutableStateOf<String?>(null) }
+    LaunchedEffect(newestId, pendingSends.size) {
+        val changed = newestId != null && newestId != lastNewestId
+        lastNewestId = newestId
+        if (changed && atBottom && messages.isNotEmpty()) {
+            listState.animateScrollToItem(0)
         }
     }
+    // 倒序布局里「更早的消息」在 index 大的那一端：可见的最大 index 接近总数时就加载
     LaunchedEffect(conversation.chatKey, hasMoreOlder) {
         if (!hasMoreOlder) return@LaunchedEffect
         snapshotFlow {
-            listState.layoutInfo.visibleItemsInfo.firstOrNull()?.index ?: 0
-        }.distinctUntilChanged().collect { firstIndex ->
-            if (firstIndex <= 3 && hasMoreOlder) onLoadOlder()
+            val info = listState.layoutInfo
+            (info.visibleItemsInfo.lastOrNull()?.index ?: 0) to info.totalItemsCount
+        }.distinctUntilChanged().collect { (lastIndex, total) ->
+            if (total > 0 && lastIndex >= total - 3) onLoadOlder()
         }
     }
     LaunchedEffect(highlightMsgId) {
         if (highlightMsgId != null) {
-            val idx = messages.indexOfFirst { it.id == highlightMsgId }
+            val idx = viewMessages.indexOfFirst { it.id == highlightMsgId }
             if (idx >= 0) listState.animateScrollToItem(idx)
             kotlinx.coroutines.delay(1200)
             onSeenHighlight()
@@ -366,6 +372,12 @@ fun ChatScreen(
         }
 
         // ===== 消息列表（占满输入区以外的空间；面板打开时它变矮，但最新消息仍贴着输入栏）=====
+        //
+        // 末尾锚定：QQ 的消息列表是 AIOLayoutManager.setStackFromEnd(true)
+        // （AbsMsgListVB$recyclerView$2 → 锚到 itemCount-1），所以进群第一帧就停在最新一条，
+        // 不会「先看到旧消息、再被强行跳到最新」那种闪屏。
+        // Compose 没有 stackFromEnd，等价做法是 reverseLayout = true + 数据倒序：
+        // 最新一条是 index 0，也就是屏幕最底部，首帧天然居中在末尾。
         Box(
             Modifier
                 .weight(1f)
@@ -376,37 +388,16 @@ fun ChatScreen(
         ) {
             LazyColumn(
                 state = listState,
+                reverseLayout = true,
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 8.dp),
             ) {
-                if (hasMoreOlder) {
-                    item(key = "__loading__") {
-                        Row(
-                            Modifier.fillMaxWidth().padding(10.dp),
-                            horizontalArrangement = Arrangement.Center,
-                        ) {
-                            if (loadingOlder) {
-                                CircularProgressIndicator(
-                                    color = QQ.Blue, strokeWidth = 2.dp, modifier = Modifier.size(16.dp)
-                                )
-                                Spacer(Modifier.width(6.dp))
-                                Text("加载中…", fontSize = 12.sp, color = QQ.TextSecondary)
-                            } else {
-                                Text("上滑加载更多", fontSize = 12.sp, color = QQ.TextHint)
-                            }
-                        }
-                    }
-                } else if (messages.isNotEmpty()) {
-                    item(key = "__no_more__") {
-                        Text(
-                            "没有更多消息了", fontSize = 11.sp, color = QQ.TextHint,
-                            modifier = Modifier.fillMaxWidth().padding(8.dp),
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                        )
-                    }
+                // 顺序 = 屏幕从下往上：待发送 → 最新消息 → … → 更早消息 → 加载更多
+                items(viewPendingSends, key = { "pending_${it.localId}" }) { p ->
+                    PendingRow(p, selfAvatar = account?.avatarUrl ?: "", selfName = account?.botName ?: "")
                 }
 
-                items(messages, key = { it.id }) { msg ->
+                items(viewMessages, key = { "msg_${it.id}" }) { msg ->
                     SwipeQuoteRow(
                         msg = msg,
                         onQuote = { quote = msg },
@@ -459,8 +450,58 @@ fun ChatScreen(
                     )
                 }
 
-                items(pendingSends, key = { it.localId }) { p ->
-                    PendingRow(p, selfAvatar = account?.avatarUrl ?: "", selfName = account?.botName ?: "")
+                // 列表顶端（倒序里是最后一个 item）：加载更早消息 / 没有更多
+                if (hasMoreOlder) {
+                    item(key = "__loading__") {
+                        Row(
+                            Modifier.fillMaxWidth().padding(10.dp),
+                            horizontalArrangement = Arrangement.Center,
+                        ) {
+                            if (loadingOlder) {
+                                CircularProgressIndicator(
+                                    color = QQ.Blue, strokeWidth = 2.dp, modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text("加载中…", fontSize = 12.sp, color = QQ.TextSecondary)
+                            } else {
+                                Text("上滑加载更多", fontSize = 12.sp, color = QQ.TextHint)
+                            }
+                        }
+                    }
+                } else if (messages.isNotEmpty()) {
+                    item(key = "__no_more__") {
+                        Text(
+                            "没有更多消息了", fontSize = 11.sp, color = QQ.TextHint,
+                            modifier = Modifier.fillMaxWidth().padding(8.dp),
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        )
+                    }
+                }
+            }
+
+            // 与 QQ 一致：用户上滑离开底部时不自动跟随新消息，而是在右下角显示「回到底部」箭头
+            // （QQ 的 UnreadBubbleVB：有未读显示数字气泡，无未读显示 drawable/aio_back_bottom 箭头）
+            androidx.compose.animation.AnimatedVisibility(
+                visible = !atBottom,
+                enter = androidx.compose.animation.fadeIn() + androidx.compose.animation.scaleIn(),
+                exit = androidx.compose.animation.fadeOut() + androidx.compose.animation.scaleOut(),
+                modifier = Modifier.align(Alignment.BottomEnd).padding(end = 14.dp, bottom = 14.dp),
+            ) {
+                Box(
+                    Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(Color.White)
+                        .clickable {
+                            scope.launch { listState.animateScrollToItem(0) }
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Image(
+                        painter = painterResource(R.drawable.skin_aio_arrowdown_nor),
+                        contentDescription = "回到底部",
+                        modifier = Modifier.size(20.dp),
+                    )
                 }
             }
         }
@@ -898,15 +939,13 @@ private fun Bubble(msg: ChatMessage, self: Boolean, onImageClick: (String) -> Un
             // 点击图片全屏查看（长按仍交给外层的消息菜单/滑动引用）
             Box(
                 Modifier
-                    .clip(RoundedCornerShape(4.dp))
+                    // QQ: RoundBubbleImageView.setRadiusDP(10f) → 图片圆角 10dp
+                    .clip(RoundedCornerShape(ChatImageSpec.CornerRadius))
                     .clickable(enabled = seg.url.isNotEmpty() || seg.localPath.isNotEmpty()) {
                         onImageClick(seg.localPath.ifEmpty { seg.url })
                     }
             ) {
-                AsyncImage(
-                    model = seg.displayUri, contentDescription = null, contentScale = ContentScale.Crop,
-                    modifier = Modifier.widthIn(max = 200.dp).heightIn(min = 80.dp),
-                )
+                ChatImage(seg)
             }
             Spacer(Modifier.height(4.dp))
         }
@@ -932,6 +971,58 @@ private fun Bubble(msg: ChatMessage, self: Boolean, onImageClick: (String) -> Un
             }
         }
     }
+}
+
+/**
+ * 聊天里的图片气泡。
+ *
+ * 以前是 `widthIn(max = 200.dp)` 且**不限高**：1080×1920 的竖图会显示成 200×355dp，
+ * 一条图片消息就吃掉大半屏，把最新消息挤出可视区 —— 这就是「有人发图片后页面显示不完整、
+ * 看着像是按头像和昵称定位」的原因。
+ *
+ * 现在完全按 QQ 的规则算尺寸（见 [ChatImageSpec]）：
+ *  - 可用宽 = 屏宽 − 108dp − 28dp
+ *  - 长边上限 = 0.85 × 可用宽（原图长边 ≤200dp 的小图固定 135dp）
+ *  - 短边下限 = 0.28 × 可用宽（小图 45dp）
+ *  - 等比缩放后再把宽高各自夹一次上限 → 极端比例（长截图）会被裁切，与 QQ 一致
+ *  - 圆角 10dp（QQ `RoundBubbleImageView.setRadiusDP(10f)`）
+ */
+@Composable
+private fun ChatImage(seg: MessageSegment) {
+    val context = LocalContext.current
+    val density = LocalDensity.current
+    val screenWidthDp = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp.dp
+    // 原始像素宽高：优先用服务端下发的（稳定、不跳动），没有再退到解码后的位图尺寸
+    var pxW by remember(seg.url, seg.localPath) { mutableIntStateOf(seg.width) }
+    var pxH by remember(seg.url, seg.localPath) { mutableIntStateOf(seg.height) }
+    val painter = coil.compose.rememberAsyncImagePainter(
+        model = coil.request.ImageRequest.Builder(context)
+            .data(seg.displayUri)
+            .listener(
+                onSuccess = { _, result ->
+                    val d = result.drawable
+                    if ((pxW <= 0 || pxH <= 0) && d.intrinsicWidth > 0 && d.intrinsicHeight > 0) {
+                        pxW = d.intrinsicWidth
+                        pxH = d.intrinsicHeight
+                    }
+                }
+            )
+            .build()
+    )
+    val (w, h) = ChatImageSpec.size(
+        origWidthPx = pxW,
+        origHeightPx = pxH,
+        density = density.density,
+        // 手机上就是屏宽；平板上要夹到气泡可用宽（气泡上限 270dp − 左右各 12dp 内边距 = 246dp，
+        // 对应 availableWidthDp 上限 246/0.85 + 136 ≈ 425dp），否则图片会被气泡裁掉
+        availableWidthDp = minOf(screenWidthDp, 425.dp),
+    )
+    Image(
+        painter = painter,
+        contentDescription = null,
+        contentScale = ContentScale.Crop,
+        modifier = Modifier.width(w).height(h),
+    )
 }
 
 /** 把 md 里的 <qqbot-at-user> / <qqbot-at-everyone> 还原成可读的 @昵称（服务端一般已转好，这里兜底） */

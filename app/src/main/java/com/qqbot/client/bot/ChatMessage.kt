@@ -216,6 +216,10 @@ data class ChatMessage(
                                 kind = kind,
                                 url = u.ifEmpty { wav },
                                 contentType = ct,
+                                // 原图宽高：气泡按这个比例等比缩放（QQ 的 adjustViewBounds 思路），
+                                // 不读的话竖图会被撑成一整屏，把最新消息挤出可视区。
+                                width = att.optInt("width", 0),
+                                height = att.optInt("height", 0),
                                 voiceWavUrl = wav,
                                 asrText = att.optString("asr_refer_text"),
                                 sizeBytes = att.optLong("size", 0L),
